@@ -12,7 +12,7 @@
 
 | 交付物 | 路径 | 证据 |
 |---|---|---|
-| Flutter 应用 | `apps/meowo/` | `flutter analyze` 无问题；`flutter test` 6 项通过 |
+| Flutter 应用 | `apps/meowo/` | `flutter analyze` 无问题；`flutter test` 7 项通过 |
 | C++23 核心 | `packages/meowo_core/native/` | CTest 6 项通过；Linux/Android arm64 构建成功 |
 | Linux release | `apps/meowo/build/linux/x64/release/bundle/` | 可启动，8 秒运行无崩溃 |
 | Android release APK | `apps/meowo/build/app/outputs/flutter-apk/app-release.apk` | 22.6 MB，arm64-v8a，包含 `libmeowo_core.so` |
@@ -23,7 +23,7 @@
 APK SHA-256：
 
 ```text
-26da144949fdfb96d7bc72f227b98ad01adf744387df1d7c6bc470e87158af49
+dc90a7e683e2d4bca638a7ea4b3421c38ebf6b4fc708f3f20be6313e2ba09a5d
 ```
 
 Linux 可执行文件 SHA-256：
@@ -93,7 +93,7 @@ flutter build apk --release --target-platform android-arm64
 结果：
 
 - CTest：`6/6` 通过。
-- Flutter test：`6/6` 通过，覆盖 FFI 文档闭环、PDF 导入、桌面布局、手机布局、页面离屏渲染。
+- Flutter test：`7/7` 通过，覆盖 FFI 文档闭环、PDF 导入、真实笔迹提交、桌面布局、手机布局、页面离屏渲染。
 - `flutter analyze`：`No issues found!`
 - Linux release 启动：8 秒运行无崩溃/无异常日志。
 - Android release APK：22.6 MB；`lib/arm64-v8a/libmeowo_core.so` 已打包。
