@@ -14,8 +14,8 @@
 |---|---|---|
 | Flutter 应用 | `apps/meowo/` | `flutter analyze` 无问题；`flutter test` 7 项通过 |
 | C++23 核心 | `packages/meowo_core/native/` | CTest 6 项通过；Linux/Android arm64 构建成功 |
-| Linux release | `apps/meowo/build/linux/x64/release/bundle/` | 可启动，8 秒运行无崩溃 |
-| Android release APK | `apps/meowo/build/app/outputs/flutter-apk/app-release.apk` | 22.6 MB，arm64-v8a，包含 `libmeowo_core.so` |
+| Linux release | `dist/meowo-1.0.0-alpha.1-linux-x64.tar.gz` | 解压后 `bundle/meowo` 可启动，8 秒运行无崩溃 |
+| Android release APK | `dist/meowo-1.0.0-alpha.1-android-arm64.apk` | 22.6 MB，arm64-v8a，包含 `libmeowo_core.so` |
 | 示例 EPUB/PDF 验证 | `/tmp/meowo-sample.epub`、`/tmp/meowo-sample.pdf` | EPUB → 2 页 PDF；PDF 导入测试通过 |
 | 本机操作日志 | `.meowo-agent/operation-log.md` | 不纳入 Git |
 | 访谈与基线 | `docs/agent/11-owner-interview.md`、`12-final-1.0-baseline.md`、三份回答补充 | 已提交 |
@@ -29,7 +29,7 @@ dc90a7e683e2d4bca638a7ea4b3421c38ebf6b4fc708f3f20be6313e2ba09a5d
 Linux 可执行文件 SHA-256：
 
 ```text
-b578110ee325c1caa20409123f16ec23065ac388cffc3b40b1fba01f6d732e1e
+291bd7179ff21a97cd5f7106a93ec11d5ac1e8d04d5a34c861c62c9e2aba5203
 ```
 
 > 校验值对应构建时刻产物；后续重新构建会变化。APK 使用 debug 签名（Gradle release 配置仍指向 debug signingConfig），**不能作为正式发布包**。
@@ -209,7 +209,7 @@ flutter build linux --release
 Android：
 
 ```bash
-adb install -r apps/meowo/build/app/outputs/flutter-apk/app-release.apk
+adb install -r dist/meowo-1.0.0-alpha.1-android-arm64.apk
 ```
 
 资料库默认位于 `path_provider` 的应用支持目录下（Linux 通常为 `~/.local/share/app.meowo/library` 或类似路径）。

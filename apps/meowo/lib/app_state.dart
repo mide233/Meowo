@@ -174,8 +174,19 @@ class AppState extends ChangeNotifier {
     await refresh();
   }
 
+  Future<void> saveActiveDocument() async {
+    final document = activeDocument;
+    if (document == null) return;
+    try {
+      core.call('save_document', {'document': document});
+    } catch (_) {
+      // The editor shows save errors; callers may still leave the document.
+    }
+  }
+
   Future<void> selectDocument(String id) async {
     if (activeDocumentId == id) return;
+    await saveActiveDocument();
     activeDocumentId = id;
     activeDocument = null;
     notifyListeners();
@@ -216,7 +227,8 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  void closeTab(String id) {
+  Future<void> closeTab(String id) async {
+    if (activeDocumentId == id) await saveActiveDocument();
     openTabs.remove(id);
     if (activeDocumentId == id) {
       activeDocumentId = openTabs.isEmpty ? null : openTabs.last;

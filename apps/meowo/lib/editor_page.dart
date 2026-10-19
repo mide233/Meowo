@@ -956,7 +956,10 @@ class _EditorPageState extends State<EditorPage> {
             children: [
               IconButton(
                 tooltip: '返回资料库',
-                onPressed: state.showLibrary,
+                onPressed: () async {
+                  await _flushSave();
+                  state.showLibrary();
+                },
                 icon: const Icon(Icons.arrow_back),
               ),
               const SizedBox(width: 4),

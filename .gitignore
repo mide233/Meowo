@@ -30,3 +30,7 @@ compile_commands.json
 .vscode/
 .DS_Store
 Thumbs.db
+
+# Local release artifacts (checksums are tracked)
+dist/*.apk
+dist/*.tar.gz

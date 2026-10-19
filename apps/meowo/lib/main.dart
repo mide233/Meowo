@@ -130,7 +130,10 @@ class _Tabs extends StatelessWidget {
         child: Row(
           children: [
             TextButton.icon(
-              onPressed: state.showLibrary,
+              onPressed: () async {
+                await state.saveActiveDocument();
+                state.showLibrary();
+              },
               icon: const Icon(Icons.arrow_back, size: 18),
               label: const Text('资料库'),
             ),
