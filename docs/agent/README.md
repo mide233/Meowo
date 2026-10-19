@@ -1,8 +1,8 @@
 # Meowo（喵记）Agent 文档中心
 
 > 本目录是所有 AI Agent 与协作者阅读、维护的项目事实来源（Single Source of Truth）。
-> 当前基线版本：`v0.1.0`（2026-10-19）  
-> 当前状态：文档基线、提示词与 Phase 0 计划已完成；等待项目负责人回答决策访谈中的 P0 问题；尚未开始编码。
+> 当前基线版本：`v1.0-baseline.1`（2026-10-20）  
+> 当前状态：负责人已完成 Q-001–Q-162 访谈；1.0 合并基线已冻结；进入自治实现与验证阶段。
 
 ---
 
@@ -14,17 +14,18 @@
 |---:|---|---|
 | 1 | [00-product-charter.md](00-product-charter.md) | 产品愿景、用户、原则、范围、术语 |
 | 2 | [01-functional-requirements.md](01-functional-requirements.md) | 需求编号、优先级、验收标准 |
-| 3 | [09-decisions-and-open-questions.md](09-decisions-and-open-questions.md) | 已定决策与待确认事项 |
-| 4 | [03-document-format.md](03-document-format.md) | 文档数据模型与 `.meowo` 文件格式 |
-| 5 | [02-technical-architecture.md](02-technical-architecture.md) | Flutter / C++23 / FFI / 渲染 / 线程架构 |
-| 6 | [04-ux-interaction-spec.md](04-ux-interaction-spec.md) | 页面结构、交互、笔与触控行为、视觉规范 |
-| 7 | [05-quality-and-test-strategy.md](05-quality-and-test-strategy.md) | 测试、性能门槛、跨平台验收 |
-| 8 | [07-engineering-conventions.md](07-engineering-conventions.md) | 编码规范、依赖、Git、Definition of Done |
-| 9 | [08-agent-operating-protocol.md](08-agent-operating-protocol.md) | Agent 工作流程、权限、计划与交付格式 |
-| 10 | [06-roadmap.md](06-roadmap.md) | 阶段划分、依赖关系、退出标准 |
-| 11 | [10-risk-register.md](10-risk-register.md) | 风险、触发条件、缓解责任人 |
-| 12 | 当前任务对应的 [plans/](plans/) 文档 | 任务级范围、步骤和进度 |
-| 13 | 相关 [reports/](reports/) 报告 | 已发生的验证结果、偏差与遗留 |
+| 3 | [12-final-1.0-baseline.md](12-final-1.0-baseline.md) | **1.0 合并后的最终范围、交互、格式与验收基线** |
+| 4 | [09-decisions-and-open-questions.md](09-decisions-and-open-questions.md) | 已定决策与待确认事项 |
+| 5 | [03-document-format.md](03-document-format.md) | 文档数据模型与 `.meowo` 文件格式 |
+| 6 | [02-technical-architecture.md](02-technical-architecture.md) | Flutter / C++23 / FFI / 渲染 / 线程架构 |
+| 7 | [04-ux-interaction-spec.md](04-ux-interaction-spec.md) | 页面结构、交互、笔与触控行为、视觉规范 |
+| 8 | [05-quality-and-test-strategy.md](05-quality-and-test-strategy.md) | 测试、性能门槛、跨平台验收 |
+| 9 | [07-engineering-conventions.md](07-engineering-conventions.md) | 编码规范、依赖、Git、Definition of Done |
+| 10 | [08-agent-operating-protocol.md](08-agent-operating-protocol.md) | Agent 工作流程、权限、计划与交付格式 |
+| 11 | [06-roadmap.md](06-roadmap.md) | 阶段划分、依赖关系、退出标准 |
+| 12 | [10-risk-register.md](10-risk-register.md) | 风险、触发条件、缓解责任人 |
+| 13 | 当前任务对应的 [plans/](plans/) 文档 | 任务级范围、步骤和进度 |
+| 14 | 相关 [reports/](reports/) 报告 | 已发生的验证结果、偏差与遗留 |
 
 角色专用提示词位于 [prompts/](prompts/)。它们不能覆盖本目录中的需求、决策和约束；若提示词与主文档冲突，以主文档为准并立即报告冲突。
 
@@ -84,15 +85,17 @@ Meowo/
 
 ## 5. 当前关键待确认项
 
-在进入书籍（PDF/EPUB）与 Markdown 文件导入开发之前，必须确认下列高杠杆决策。尚未形成决策的细节问题、追问与 P0/P1/P2 完整清单见 [11-owner-interview.md](11-owner-interview.md)；未回答项不得由 Agent 静默假设。
+Q-001–Q-162 的主干问题已全部回答，1.0 范围以 [12-final-1.0-baseline.md](12-final-1.0-baseline.md) 为准。仍需人工确认或补证的事项：
 
-1. **软件许可证与 EPUB 引擎路线**：是否接受 AGPL/GPL 路线（可较快得到完整 EPUB 分页），或必须采用宽松许可证方案。
-2. **“MD 阅读”的范围**：是仅指笔记内 Markdown 文本的渲染，还是必须支持导入独立 `.md` 文件。
-3. **文本编辑体验**：1.0 是否接受“Markdown 源码编辑 + 实时预览”，或必须一开始就提供所见即所得编辑。
-4. **云端同步**：1.0 是否坚持纯本地、无账号。
-5. **导出与本底文本溢出**：1.0 是否只需 `.meowo` 快照导出；书页本底文本超出页面时采用“固定页 + 溢出提示”还是自动续排。
+1. **OQ-009**：具体测试设备型号、RAM、Android 笔协议（Q-140b）。
+2. **OQ-010**：Android 是否有主动压感笔，是否调整 Android 手写承诺。
+3. **OQ-008**：PDF/PNG 导出页面范围、无限画布裁切与页码。
+4. **OQ-011**：MuPDF 构建、AGPL 合规、体积与安全更新。
+5. **OQ-012**：商标检索、正式图标/启动图/品牌资产。
+6. **OQ-013**：`.md` 超长段落/表格/代码块分页规则。
+7. **OQ-014**：真机手写延迟/压感/掌拒的验收证据格式。
 
-完整选项与推荐见 [09-decisions-and-open-questions.md](09-decisions-and-open-questions.md)。未确认前，Agent 不得擅自引入相关依赖或承诺交付形式。
+完整状态见 [09-decisions-and-open-questions.md](09-decisions-and-open-questions.md)。未确认前，Agent 不得把相关能力宣称为已完成，也不得静默假设。
 
 ## 6. 术语速查
 
