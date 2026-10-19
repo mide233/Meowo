@@ -10,10 +10,12 @@ build/
 
 # Native build outputs
 **/build/
+**/build-*/
 **/cmake-build-*/
 *.o
 *.a
 *.so
+!apps/meowo/android/app/src/main/jniLibs/**/*.so
 *.dylib
 *.dll
 *.exe

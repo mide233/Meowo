@@ -91,6 +91,24 @@ install(CODE "
 set(INSTALL_BUNDLE_DATA_DIR "${CMAKE_INSTALL_PREFIX}/data")
 set(INSTALL_BUNDLE_LIB_DIR "${CMAKE_INSTALL_PREFIX}/lib")
 
+set(MEOWO_CORE_SOURCE_DIR "${CMAKE_CURRENT_SOURCE_DIR}/../../../packages/meowo_core/native")
+set(MEOWO_CORE_BUILD_DIR "${MEOWO_CORE_SOURCE_DIR}/build")
+if(NOT CMAKE_BUILD_TYPE)
+  set(MEOWO_CORE_BUILD_TYPE Debug)
+else()
+  set(MEOWO_CORE_BUILD_TYPE ${CMAKE_BUILD_TYPE})
+endif()
+add_custom_target(meowo_core_build ALL
+  COMMAND ${CMAKE_COMMAND} -S "${MEOWO_CORE_SOURCE_DIR}" -B "${MEOWO_CORE_BUILD_DIR}"
+          -G Ninja -DCMAKE_BUILD_TYPE=${MEOWO_CORE_BUILD_TYPE}
+  COMMAND ${CMAKE_COMMAND} --build "${MEOWO_CORE_BUILD_DIR}" -j 2
+  BYPRODUCTS "${MEOWO_CORE_BUILD_DIR}/libmeowo_core.so"
+  COMMENT "Building Meowo C++ core"
+)
+add_dependencies(${BINARY_NAME} meowo_core_build)
+install(FILES "${MEOWO_CORE_BUILD_DIR}/libmeowo_core.so"
+  DESTINATION "${INSTALL_BUNDLE_LIB_DIR}" COMPONENT Runtime)
+
 install(TARGETS ${BINARY_NAME} RUNTIME DESTINATION "${CMAKE_INSTALL_PREFIX}"
   COMPONENT Runtime)
 
