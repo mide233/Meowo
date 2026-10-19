@@ -1,0 +1,30 @@
+# Dart / Flutter
+.dart_tool/
+.packages
+.pub-cache/
+.pub/
+build/
+*.iml
+.flutter-plugins
+.flutter-plugins-dependencies
+
+# Native build outputs
+**/build/
+**/cmake-build-*/
+*.o
+*.a
+*.so
+*.dylib
+*.dll
+*.exe
+compile_commands.json
+
+# Local toolchains and agent-only state (never committed)
+.tools/
+.meowo-agent/
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
