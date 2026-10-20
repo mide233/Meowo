@@ -277,4 +277,16 @@ class AppState extends ChangeNotifier {
       'assetId': assetId,
     });
   }
+
+  Future<List<Map<String, dynamic>>> listAssets(String documentId) async {
+    final result = core.call('list_assets', {'documentId': documentId});
+    return (result['assets'] as List? ?? const [])
+        .whereType<Map>()
+        .map((item) => Map<String, dynamic>.from(item))
+        .toList();
+  }
+
+  Future<void> deleteAsset(String documentId, String assetId) async {
+    core.call('delete_asset', {'documentId': documentId, 'assetId': assetId});
+  }
 }

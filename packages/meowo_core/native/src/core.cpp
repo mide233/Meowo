@@ -42,7 +42,7 @@ namespace {
 
 constexpr int kSchemaVersion = 1;
 constexpr int64_t kApplicationId = 1296383831;  // 0x4D454F57 "MEOW"
-constexpr const char* kCoreVersion = "1.0.0-pre.1";
+constexpr const char* kCoreVersion = "1.0.0-alpha.7";
 constexpr size_t kMaxAssetBytes = 512ull * 1024ull * 1024ull;
 
 class CoreError : public std::runtime_error {
@@ -583,6 +583,8 @@ class Workspace {
     if (op == "delete_folder") return delete_folder(request);
     if (op == "add_asset") return add_asset(request);
     if (op == "get_asset") return get_asset(request);
+    if (op == "list_assets") return list_assets(request);
+    if (op == "delete_asset") return delete_asset(request);
     if (op == "import_markdown") return import_markdown(request);
     if (op == "import_pdf") return import_pdf(request);
     if (op == "import_epub") return import_epub(request);
@@ -928,6 +930,86 @@ class Workspace {
   json get_asset(const json& request) {
     const std::string doc_id = request.value("documentId", "");
     return load_asset(document_path(root_, doc_id), request.value("assetId", ""));
+  }
+
+  std::vector<std::string> find_asset_references(const json& doc, const std::string& asset_id) {
+    std::vector<std::string> refs;
+    const std::string link = "meowo://asset/" + asset_id;
+    auto check_element = [&](const json& el, const std::string& where) {
+      if (!el.is_object()) return;
+      if (el.value("assetId", "") == asset_id || el.value("sourceAssetId", "") == asset_id) {
+        refs.push_back(where);
+      }
+      if (el.contains("markdown") && el["markdown"].is_string() &&
+          el["markdown"].get<std::string>().find(link) != std::string::npos) {
+        refs.push_back(where + "（Markdown 链接）");
+      }
+    };
+    if (doc.contains("bookSource") && doc["bookSource"].is_object() &&
+        doc["bookSource"].value("assetId", "") == asset_id) {
+      refs.push_back("书籍源文件");
+    }
+    int page_no = 1;
+    for (const auto& page : doc.value("pages", json::array())) {
+      if (page.contains("body")) check_element(page["body"], "第 " + std::to_string(page_no) + " 页 / 本底文本");
+      int layer_no = 1;
+      for (const auto& layer : page.value("layers", json::array())) {
+        int element_no = 1;
+        for (const auto& el : layer.value("elements", json::array())) {
+          check_element(el, "第 " + std::to_string(page_no) + " 页 / 图层 " +
+                                std::to_string(layer_no) + " / 元素 " + std::to_string(element_no));
+          ++element_no;
+        }
+        ++layer_no;
+      }
+      ++page_no;
+    }
+    return refs;
+  }
+
+  json list_assets(const json& request) {
+    const std::string doc_id = request.value("documentId", "");
+    json doc = load_document_payload(document_path(root_, doc_id));
+    json out = json::array();
+    for (const auto& asset : doc.value("assets", json::array())) {
+      json item = asset;
+      const auto refs = find_asset_references(doc, asset.value("id", ""));
+      item["referenced"] = !refs.empty();
+      item["referenceCount"] = refs.size();
+      item["references"] = refs;
+      out.push_back(std::move(item));
+    }
+    return json{{"assets", out}};
+  }
+
+  json delete_asset(const json& request) {
+    const std::string doc_id = request.value("documentId", "");
+    const std::string asset_id = request.value("assetId", "");
+    if (asset_id.empty()) throw CoreError("缺少资源 ID");
+    const fs::path path = document_path(root_, doc_id);
+    json doc = load_document_payload(path);
+    const auto refs = find_asset_references(doc, asset_id);
+    if (!refs.empty()) {
+      throw CoreError("资源仍被引用，不能删除：" + refs.front());
+    }
+    bool found = false;
+    json kept = json::array();
+    for (const auto& asset : doc.value("assets", json::array())) {
+      if (asset.value("id", "") == asset_id) {
+        found = true;
+      } else {
+        kept.push_back(asset);
+      }
+    }
+    if (!found) throw CoreError("资源不存在");
+    doc["assets"] = std::move(kept);
+    doc["updatedAt"] = now_ms();
+    save_document_payload(path, doc);
+    Database doc_db(path);
+    Statement stmt(doc_db.get(), "DELETE FROM assets WHERE id=?;");
+    stmt.bind_text(1, asset_id);
+    stmt.step_done();
+    return json{{"id", asset_id}, {"deleted", true}};
   }
 
   json import_markdown(const json& request) {

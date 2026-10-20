@@ -153,6 +153,45 @@ TEST(Core, AssetRoundTrip) {
   EXPECT_EQ(reopened["assets"][0]["name"], "hello.txt");
 }
 
+TEST(Core, AssetReferenceProtection) {
+  TempDir temp;
+  Core core(temp.path);
+  const json doc = core.call({{"op", "create_document"},
+                              {"title", "附件引用"},
+                              {"kind", "paged"}});
+  const std::string id = doc["id"];
+  const json asset = core.call({{"op", "add_asset"},
+                                {"documentId", id},
+                                {"name", "note.txt"},
+                                {"mime", "text/plain"},
+                                {"data", "aGVsbG8="}});
+  const std::string assetId = asset["id"];
+  json payload = core.call({{"op", "open_document"}, {"id", id}});
+  payload["pages"][0]["layers"][0]["elements"].push_back(
+      {{"id", "attachment_test"},
+       {"type", "attachment"},
+       {"assetId", assetId},
+       {"name", "note.txt"},
+       {"mime", "text/plain"}});
+  core.call({{"op", "save_document"}, {"document", payload}});
+
+  const json listed = core.call({{"op", "list_assets"}, {"documentId", id}});
+  ASSERT_EQ(listed["assets"].size(), 1u);
+  EXPECT_TRUE(listed["assets"][0]["referenced"]);
+  EXPECT_EQ(listed["assets"][0]["referenceCount"], 1);
+  EXPECT_THROW(core.call({{"op", "delete_asset"},
+                          {"documentId", id},
+                          {"assetId", assetId}}),
+               std::runtime_error);
+
+  payload = core.call({{"op", "open_document"}, {"id", id}});
+  payload["pages"][0]["layers"][0]["elements"].clear();
+  core.call({{"op", "save_document"}, {"document", payload}});
+  core.call({{"op", "delete_asset"}, {"documentId", id}, {"assetId", assetId}});
+  const json after = core.call({{"op", "list_assets"}, {"documentId", id}});
+  EXPECT_TRUE(after["assets"].empty());
+}
+
 TEST(Core, SearchFindsTextAndTitle) {
   TempDir temp;
   Core core(temp.path);

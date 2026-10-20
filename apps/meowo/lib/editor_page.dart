@@ -13,6 +13,7 @@ import 'package:pdf/widgets.dart' as pw;
 import 'package:path_provider/path_provider.dart';
 
 import 'app_state.dart';
+import 'attachment_panel.dart';
 import 'canvas_view.dart';
 import 'image_edit_dialog.dart';
 import 'ink_ops.dart';
@@ -600,6 +601,21 @@ class _EditorPageState extends State<EditorPage> {
         'locked': false,
       });
     });
+  }
+
+  Future<void> _showAttachments() async {
+    final documentId = _doc!['id'] as String;
+    await showModalBottomSheet<void>(
+      context: context,
+      showDragHandle: true,
+      isScrollControlled: true,
+      builder: (context) => AttachmentPanel(
+        load: () => state.listAssets(documentId),
+        onAdd: _addAttachment,
+        onOpen: (asset) => _openAttachmentExternally(asset),
+        onDelete: (assetId) => state.deleteAsset(documentId, assetId),
+      ),
+    );
   }
 
   Future<void> _onElementTap(Map<String, dynamic> picked) async {
@@ -1408,6 +1424,11 @@ class _EditorPageState extends State<EditorPage> {
                   ),
                   icon: const Icon(Icons.layers_outlined),
                 ),
+              IconButton(
+                tooltip: '附件',
+                onPressed: _showAttachments,
+                icon: const Icon(Icons.attach_file_outlined),
+              ),
               PopupMenuButton<String>(
                 tooltip: '导出',
                 onSelected: (value) {
