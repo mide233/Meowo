@@ -69,6 +69,11 @@ class _EditorPageState extends State<EditorPage> {
     return pages[_pageIndex] as Map<String, dynamic>;
   }
 
+  List<Map<String, dynamic>> get _pages {
+    final pages = _doc!['pages'] as List;
+    return pages.map((e) => e as Map<String, dynamic>).toList();
+  }
+
   List get _layersRaw => _page['layers'] as List;
 
   List<Map<String, dynamic>> get _layers {
@@ -291,12 +296,23 @@ class _EditorPageState extends State<EditorPage> {
     if (_undo.isEmpty) return;
     final current = jsonEncode(_doc);
     final previous = jsonDecode(_undo.removeLast()) as Map<String, dynamic>;
+    final oldPageId = _pageIndex < _pages.length
+        ? _pages[_pageIndex]['id'] as String?
+        : null;
+    final oldLayerId = _activeLayerId;
     _redo.add(current);
     state.setActiveDocument(previous);
     _selectedIds.clear();
     _transformOriginals.clear();
-    _pageIndex = 0;
-    _activeLayerId = _layers.isEmpty ? null : _layers.first['id'] as String?;
+    final pages = _pages;
+    final pageIndex = pages.indexWhere((page) => page['id'] == oldPageId);
+    _pageIndex = pageIndex >= 0
+        ? pageIndex
+        : (_pageIndex < pages.length ? _pageIndex : pages.length - 1);
+    final layerIndex = _layers.indexWhere((layer) => layer['id'] == oldLayerId);
+    _activeLayerId = layerIndex >= 0
+        ? _layers[layerIndex]['id'] as String?
+        : (_layers.isEmpty ? null : _layers.first['id'] as String?);
     _loadPageImages();
     _scheduleSave();
   }
@@ -305,12 +321,23 @@ class _EditorPageState extends State<EditorPage> {
     if (_redo.isEmpty) return;
     final current = jsonEncode(_doc);
     final next = jsonDecode(_redo.removeLast()) as Map<String, dynamic>;
+    final oldPageId = _pageIndex < _pages.length
+        ? _pages[_pageIndex]['id'] as String?
+        : null;
+    final oldLayerId = _activeLayerId;
     _undo.add(current);
     state.setActiveDocument(next);
     _selectedIds.clear();
     _transformOriginals.clear();
-    _pageIndex = 0;
-    _activeLayerId = _layers.isEmpty ? null : _layers.first['id'] as String?;
+    final pages = _pages;
+    final pageIndex = pages.indexWhere((page) => page['id'] == oldPageId);
+    _pageIndex = pageIndex >= 0
+        ? pageIndex
+        : (_pageIndex < pages.length ? _pageIndex : pages.length - 1);
+    final layerIndex = _layers.indexWhere((layer) => layer['id'] == oldLayerId);
+    _activeLayerId = layerIndex >= 0
+        ? _layers[layerIndex]['id'] as String?
+        : (_layers.isEmpty ? null : _layers.first['id'] as String?);
     _loadPageImages();
     _scheduleSave();
   }
@@ -1430,16 +1457,39 @@ class _EditorPageState extends State<EditorPage> {
                   onPressed: () => showModalBottomSheet<void>(
                     context: context,
                     showDragHandle: true,
-                    builder: (context) => _LayersSheet(
-                      layers: _layers,
-                      activeLayerId: _activeLayerId,
-                      onSelect: (id) => setState(() => _activeLayerId = id),
-                      onAdd: _addLayer,
-                      onDelete: _deleteLayer,
-                      onToggleVisible: () => _toggleLayer('visible'),
-                      onToggleLock: () => _toggleLayer('locked'),
-                      onOpacity: _setLayerOpacity,
-                      onMove: _moveLayer,
+                    builder: (context) => StatefulBuilder(
+                      builder: (context, setSheetState) => _LayersSheet(
+                        layers: _layers,
+                        activeLayerId: _activeLayerId,
+                        onSelect: (id) {
+                          setState(() => _activeLayerId = id);
+                          setSheetState(() {});
+                        },
+                        onAdd: () {
+                          _addLayer();
+                          setSheetState(() {});
+                        },
+                        onDelete: () {
+                          _deleteLayer();
+                          setSheetState(() {});
+                        },
+                        onToggleVisible: () {
+                          _toggleLayer('visible');
+                          setSheetState(() {});
+                        },
+                        onToggleLock: () {
+                          _toggleLayer('locked');
+                          setSheetState(() {});
+                        },
+                        onOpacity: (value) {
+                          _setLayerOpacity(value);
+                          setSheetState(() {});
+                        },
+                        onMove: (delta) {
+                          _moveLayer(delta);
+                          setSheetState(() {});
+                        },
+                      ),
                     ),
                   ),
                   icon: const Icon(Icons.layers_outlined),

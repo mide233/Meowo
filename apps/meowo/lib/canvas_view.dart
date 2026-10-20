@@ -83,6 +83,8 @@ class _CanvasViewState extends State<CanvasView> {
   String? _fittedPageId;
   bool _panning = false;
   Offset? _panLast;
+  bool _middlePan = false;
+  Offset? _middleLast;
   final _touches = <int, Offset>{};
   bool _viewGesture = false;
   double _baseZoom = 1.0;
@@ -237,6 +239,13 @@ class _CanvasViewState extends State<CanvasView> {
         return;
       }
     }
+    if (event.kind == PointerDeviceKind.mouse &&
+        (event.buttons & kMiddleMouseButton) != 0) {
+      _cancelActiveGesture();
+      _middlePan = true;
+      _middleLast = event.localPosition;
+      return;
+    }
     if (widget.tool == 'hand') {
       setState(() => _panning = true);
       _panLast = event.localPosition;
@@ -266,6 +275,14 @@ class _CanvasViewState extends State<CanvasView> {
   }
 
   void _onMove(PointerMoveEvent event) {
+    if (_middlePan) {
+      final last = _middleLast;
+      if (last != null) {
+        setState(() => _offset += event.localPosition - last);
+      }
+      _middleLast = event.localPosition;
+      return;
+    }
     if (_viewGesture) {
       if (_touches.containsKey(event.pointer)) {
         _touches[event.pointer] = event.localPosition;
@@ -301,6 +318,11 @@ class _CanvasViewState extends State<CanvasView> {
   }
 
   void _onUp(PointerUpEvent event) {
+    if (_middlePan) {
+      _middlePan = false;
+      _middleLast = null;
+      return;
+    }
     _touches.remove(event.pointer);
     if (_viewGesture) {
       if (_touches.length < 2) {
