@@ -53,7 +53,7 @@
 - `ExportBookPdfWritesInkAndHighlighterAsPaths`：内容流有颜色/路径/描边；ExtGState 有 `/BM /Multiply` 与约 0.32 alpha。
 - `ExportBookPdfUsesPaperSizeForNotePagesAndHonorsRanges`：源页 + 笔记页 + 源页共 3 页；笔记页 MediaBox 等于书籍纸张；单页范围只输出第 2 源页；叠加 PNG 作为 XObject 嵌入并在页面中心渲染为红色。
 - `ExportBookPdfFallsBackToPagePngAndReportsIt`：无 `bookSource` 的 `import_pdf_pages` 书籍输出 1 页 PNG，报告 `missing_book_source`，页面有 XObject。
-- `ExportBookPdfRequiresExplicitOverwrite`：默认拒绝覆盖，显式 `overwrite:true` 成功。
+- `ExportBookPdfRequiresExplicitOverwrite`：默认拒绝覆盖，显式 `overwrite:true` 成功；目标等于当前 `.meowo` 文件时即使 `overwrite:true` 也拒绝。
 - `ExportBookPdfHonorsCancelAndWritesProgress`：取消文件返回 `cancelled` 且不产出文件；进度文件最终为 `done/1/1`。
 - Dart `core_test.dart` 的加密 PDF 用例额外验证导出 `fallbackPages.reason == encrypted_pdf_no_password` 且无 `vectorPages`。
 
@@ -72,7 +72,7 @@
 ### 3.3 构建
 
 - Linux release：`scripts/build_linux_app.sh` 成功；10 秒冒烟 `exit 124`（超时正常），无崩溃/异常堆栈。
-- Android arm64 release：`scripts/build_android_apk.sh` 成功；APK 32,342,981 bytes；SHA256 `16ec45074037184bd55e0c77f58619bd886312ac6f0b0f8ad19fe818d6f7b829`。
+- Android arm64 release：`scripts/build_android_apk.sh` 成功；APK 32,342,981 bytes；SHA256 `c9bddf6c2775ee59c2d3900866498122403f8c5d492dc852d0c0c93e377d85b6`。
 
 ## 4. 限制与未完成
 
@@ -90,6 +90,7 @@
 ## 5. 实现提交
 
 - `dd75251`（`feat(pdf): export books with true vector source pages`）。
+- `265709b`（`fix(pdf): refuse to overwrite the active document`）：目标路径等于当前 `.meowo` 文件时拒绝导出，避免覆盖文档。
 
 ## 6. 复现命令
 
