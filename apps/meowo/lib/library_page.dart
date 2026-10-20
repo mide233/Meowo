@@ -17,8 +17,46 @@ class LibraryPage extends StatefulWidget {
 class _LibraryPageState extends State<LibraryPage> {
   final _search = TextEditingController();
   Timer? _debounce;
+  bool _selecting = false;
+  final _selected = <String>{};
 
   AppState get state => widget.state;
+
+  List<Map<String, dynamic>> get _selectedDocuments => [
+    for (final document in state.documents)
+      if (_selected.contains(document['id'])) document,
+  ];
+
+  void _clearSelection() {
+    if (!_selecting && _selected.isEmpty) return;
+    setState(() {
+      _selecting = false;
+      _selected.clear();
+    });
+  }
+
+  void _startSelection([String? id]) {
+    setState(() {
+      _selecting = true;
+      _selected.clear();
+      if (id != null) _selected.add(id);
+    });
+  }
+
+  void _toggleSelection(String id) {
+    setState(() {
+      if (!_selected.add(id)) _selected.remove(id);
+      if (_selected.isEmpty) _selecting = false;
+    });
+  }
+
+  void _selectAll() {
+    setState(() {
+      _selected
+        ..clear()
+        ..addAll(state.documents.map((document) => document['id'] as String));
+    });
+  }
 
   @override
   void dispose() {
@@ -179,11 +217,23 @@ class _LibraryPageState extends State<LibraryPage> {
                     icon: const Icon(Icons.create_new_folder_outlined),
                     label: const Text('新建文件夹'),
                   ),
+                  OutlinedButton.icon(
+                    onPressed: state.documents.isEmpty
+                        ? null
+                        : (_selecting
+                              ? () => _clearSelection()
+                              : () => _startSelection()),
+                    icon: Icon(_selecting ? Icons.close : Icons.checklist),
+                    label: Text(_selecting ? '退出多选' : '多选'),
+                  ),
                   if (state.selectedFolderId != null)
                     ActionChip(
                       avatar: const Icon(Icons.folder_open, size: 18),
                       label: const Text('清除文件夹筛选'),
-                      onPressed: () => state.setFolder(null),
+                      onPressed: () {
+                        _clearSelection();
+                        state.setFolder(null);
+                      },
                     ),
                 ],
               ),
@@ -214,7 +264,10 @@ class _LibraryPageState extends State<LibraryPage> {
                         ),
                       ],
                       onChanged: (value) {
-                        if (value != null) _guard(() => state.setFilter(value));
+                        if (value != null) {
+                          _clearSelection();
+                          _guard(() => state.setFilter(value));
+                        }
                       },
                     )
                   else
@@ -237,8 +290,10 @@ class _LibraryPageState extends State<LibraryPage> {
                         ),
                       ],
                       selected: {state.filter},
-                      onSelectionChanged: (value) =>
-                          _guard(() => state.setFilter(value.first)),
+                      onSelectionChanged: (value) {
+                        _clearSelection();
+                        _guard(() => state.setFilter(value.first));
+                      },
                     ),
                   if (state.folders.isNotEmpty)
                     DropdownButton<String?>(
@@ -255,8 +310,10 @@ class _LibraryPageState extends State<LibraryPage> {
                             child: Text(folder['name'] as String? ?? '文件夹'),
                           ),
                       ],
-                      onChanged: (value) =>
-                          _guard(() => state.setFolder(value)),
+                      onChanged: (value) {
+                        _clearSelection();
+                        _guard(() => state.setFolder(value));
+                      },
                     ),
                   Text(
                     '${state.documents.length} 个文档',
@@ -264,9 +321,18 @@ class _LibraryPageState extends State<LibraryPage> {
                       color: Theme.of(context).colorScheme.onSurfaceVariant,
                     ),
                   ),
+                  if (state.filter == LibraryFilter.trash && !_selecting)
+                    TextButton.icon(
+                      onPressed: state.documents.isEmpty
+                          ? null
+                          : () => _guard(_emptyTrash),
+                      icon: const Icon(Icons.delete_sweep_outlined),
+                      label: const Text('清空回收站'),
+                    ),
                 ],
               ),
             ),
+            if (_selecting) _selectionBar(context),
             if (state.error != null)
               Padding(
                 padding: const EdgeInsets.fromLTRB(28, 12, 28, 0),
@@ -307,6 +373,12 @@ class _LibraryPageState extends State<LibraryPage> {
                           _DocumentCard(
                             state: state,
                             document: document,
+                            selectionMode: _selecting,
+                            selected: _selected.contains(document['id']),
+                            onToggleSelection: () =>
+                                _toggleSelection(document['id'] as String),
+                            onLongPress: () =>
+                                _startSelection(document['id'] as String),
                             onOpen: () => _guard(
                               () =>
                                   state.openDocument(document['id'] as String),
@@ -351,6 +423,7 @@ class _LibraryPageState extends State<LibraryPage> {
               ),
       ),
       onChanged: (value) {
+        if (_selecting) _clearSelection();
         _debounce?.cancel();
         _debounce = Timer(const Duration(milliseconds: 280), () {
           state.setSearch(value);
@@ -411,6 +484,173 @@ class _LibraryPageState extends State<LibraryPage> {
     final file = await openFile(acceptedTypeGroups: [typeGroup]);
     if (file == null) return;
     await state.importMarkdown(file.path);
+  }
+
+  Future<bool> _confirmBulk(String title, String body) async {
+    final result = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text(title),
+        content: Text(body),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    return result == true;
+  }
+
+  Future<String?> _pickFolder() async {
+    return showDialog<String>(
+      context: context,
+      builder: (context) => SimpleDialog(
+        title: const Text('移动到文件夹'),
+        children: [
+          SimpleDialogOption(
+            onPressed: () => Navigator.pop(context, ''),
+            child: const Text('未分类'),
+          ),
+          for (final folder in state.folders)
+            SimpleDialogOption(
+              onPressed: () =>
+                  Navigator.pop(context, folder['id'] as String),
+              child: Text(folder['name'] as String? ?? '文件夹'),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _bulkFavorite() async {
+    final docs = _selectedDocuments;
+    if (docs.isEmpty) return;
+    final allFavorite = docs.every((doc) => doc['favorite'] == true);
+    final ids = docs.map((doc) => doc['id'] as String).toList();
+    await _guard(() => state.bulkFavorite(ids, !allFavorite));
+    if (mounted) _clearSelection();
+  }
+
+  Future<void> _bulkMove() async {
+    final folder = await _pickFolder();
+    if (folder == null || !mounted) return;
+    final ids = _selectedDocuments
+        .map((doc) => doc['id'] as String)
+        .toList();
+    await _guard(
+      () => state.bulkMove(ids, folder.isEmpty ? null : folder),
+    );
+    if (mounted) _clearSelection();
+  }
+
+  Future<void> _bulkTrash() async {
+    final count = _selectedDocuments.length;
+    if (count == 0) return;
+    if (!await _confirmBulk('移到回收站？', '$count 个文档会在回收站保留 30 天。')) {
+      return;
+    }
+    final ids = _selectedDocuments
+        .map((doc) => doc['id'] as String)
+        .toList();
+    await _guard(() => state.bulkTrash(ids));
+    if (mounted) _clearSelection();
+  }
+
+  Future<void> _bulkRestore() async {
+    final ids = _selectedDocuments
+        .map((doc) => doc['id'] as String)
+        .toList();
+    if (ids.isEmpty) return;
+    await _guard(() => state.bulkRestore(ids));
+    if (mounted) _clearSelection();
+  }
+
+  Future<void> _bulkPurge() async {
+    final count = _selectedDocuments.length;
+    if (count == 0) return;
+    if (!await _confirmBulk('永久删除？', '$count 个文档将被永久删除，此操作不可撤销。')) {
+      return;
+    }
+    final ids = _selectedDocuments
+        .map((doc) => doc['id'] as String)
+        .toList();
+    await _guard(() => state.bulkPurge(ids));
+    if (mounted) _clearSelection();
+  }
+
+  Future<void> _emptyTrash() async {
+    final count = state.documents.length;
+    if (count == 0) return;
+    if (!await _confirmBulk('清空回收站？', '$count 个文档将被永久删除，此操作不可撤销。')) {
+      return;
+    }
+    await _guard(state.emptyTrash);
+    if (mounted) _clearSelection();
+  }
+
+  Widget _selectionBar(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final trash = state.filter == LibraryFilter.trash;
+    final docs = _selectedDocuments;
+    final allFavorite = docs.isNotEmpty &&
+        docs.every((document) => document['favorite'] == true);
+    final empty = docs.isEmpty;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(28, 8, 28, 0),
+      child: Card(
+        color: scheme.secondaryContainer,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+          child: Wrap(
+            spacing: 8,
+            runSpacing: 4,
+            crossAxisAlignment: WrapCrossAlignment.center,
+            children: [
+              Text(
+                '已选 ${_selected.length} 项',
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              TextButton(onPressed: _selectAll, child: const Text('全选')),
+              TextButton(onPressed: _clearSelection, child: const Text('取消')),
+              if (trash) ...[
+                OutlinedButton.icon(
+                  onPressed: empty ? null : _bulkRestore,
+                  icon: const Icon(Icons.restore),
+                  label: const Text('恢复'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: empty ? null : _bulkPurge,
+                  icon: const Icon(Icons.delete_forever_outlined),
+                  label: const Text('永久删除'),
+                ),
+              ] else ...[
+                OutlinedButton.icon(
+                  onPressed: empty ? null : _bulkFavorite,
+                  icon: Icon(allFavorite ? Icons.star_outline : Icons.star),
+                  label: Text(allFavorite ? '取消收藏' : '收藏'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: empty ? null : _bulkMove,
+                  icon: const Icon(Icons.drive_file_move_outline),
+                  label: const Text('移动'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: empty ? null : _bulkTrash,
+                  icon: const Icon(Icons.delete_outline),
+                  label: const Text('移到回收站'),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
   }
 
   Future<void> _createDialog(String kind) async {
@@ -656,12 +896,20 @@ class _DocumentCard extends StatelessWidget {
     required this.document,
     required this.onOpen,
     required this.onGuard,
+    required this.selectionMode,
+    required this.selected,
+    required this.onToggleSelection,
+    required this.onLongPress,
   });
 
   final AppState state;
   final Map<String, dynamic> document;
   final VoidCallback onOpen;
   final Future<void> Function(Future<void> Function()) onGuard;
+  final bool selectionMode;
+  final bool selected;
+  final VoidCallback onToggleSelection;
+  final VoidCallback onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -679,8 +927,12 @@ class _DocumentCard extends StatelessWidget {
     );
     return Card(
       clipBehavior: Clip.antiAlias,
+      color: selected ? scheme.secondaryContainer : null,
       child: InkWell(
-        onTap: deleted ? null : onOpen,
+        onTap: selectionMode
+            ? onToggleSelection
+            : (deleted ? null : onOpen),
+        onLongPress: selectionMode ? null : onLongPress,
         child: Padding(
           padding: const EdgeInsets.fromLTRB(16, 14, 8, 8),
           child: Column(
@@ -688,7 +940,14 @@ class _DocumentCard extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Icon(icon, color: scheme.primary, size: 22),
+                  if (selectionMode)
+                    Checkbox(
+                      value: selected,
+                      onChanged: (_) => onToggleSelection(),
+                      visualDensity: VisualDensity.compact,
+                    )
+                  else
+                    Icon(icon, color: scheme.primary, size: 22),
                   const SizedBox(width: 8),
                   Expanded(
                     child: Text(
@@ -697,7 +956,8 @@ class _DocumentCard extends StatelessWidget {
                       overflow: TextOverflow.ellipsis,
                     ),
                   ),
-                  PopupMenuButton<String>(
+                  if (!selectionMode)
+                    PopupMenuButton<String>(
                     onSelected: (value) => _menu(context, value),
                     itemBuilder: (context) => [
                       if (!deleted) ...[

@@ -328,6 +328,69 @@ class AppState extends ChangeNotifier {
     await refresh();
   }
 
+  void _dropTabs(Iterable<String> ids) {
+    final removed = ids.toSet();
+    if (removed.isEmpty) return;
+    openTabs.removeWhere(removed.contains);
+    if (activeDocumentId != null && removed.contains(activeDocumentId)) {
+      activeDocumentId = null;
+      activeDocument = null;
+    }
+  }
+
+  Future<void> bulkFavorite(Iterable<String> ids, bool favorite) async {
+    final list = ids.toList();
+    if (list.isEmpty) return;
+    core.call('bulk_document_action', {
+      'ids': list,
+      'action': favorite ? 'favorite' : 'unfavorite',
+    });
+    await refresh();
+  }
+
+  Future<void> bulkTrash(Iterable<String> ids) async {
+    final list = ids.toList();
+    if (list.isEmpty) return;
+    core.call('bulk_document_action', {'ids': list, 'action': 'trash'});
+    _dropTabs(list);
+    await refresh();
+  }
+
+  Future<void> bulkRestore(Iterable<String> ids) async {
+    final list = ids.toList();
+    if (list.isEmpty) return;
+    core.call('bulk_document_action', {'ids': list, 'action': 'restore'});
+    await refresh();
+  }
+
+  Future<void> bulkMove(Iterable<String> ids, String? folderId) async {
+    final list = ids.toList();
+    if (list.isEmpty) return;
+    core.call('bulk_document_action', {
+      'ids': list,
+      'action': 'move',
+      'folderId': folderId ?? '',
+    });
+    await refresh();
+  }
+
+  Future<void> bulkPurge(Iterable<String> ids) async {
+    final list = ids.toList();
+    if (list.isEmpty) return;
+    core.call('bulk_purge_documents', {'ids': list});
+    _dropTabs(list);
+    await refresh();
+  }
+
+  Future<void> emptyTrash() async {
+    final result = core.call('empty_trash');
+    final ids = (result['ids'] as List? ?? const [])
+        .whereType<String>()
+        .toList();
+    _dropTabs(ids);
+    await refresh();
+  }
+
   Future<String> exportDocument(String id, String targetPath) async {
     final result = core.call('export_document', {
       'id': id,

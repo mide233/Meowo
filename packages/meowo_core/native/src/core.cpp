@@ -696,6 +696,9 @@ class Workspace {
     if (op == "delete_document") return delete_document(request);
     if (op == "restore_document") return restore_document(request);
     if (op == "purge_document") return purge_document(request);
+    if (op == "bulk_document_action") return bulk_document_action(request);
+    if (op == "bulk_purge_documents") return bulk_purge_documents(request);
+    if (op == "empty_trash") return empty_trash(request);
     if (op == "search") return search(request);
     if (op == "list_folders") return list_folders();
     if (op == "create_folder") return create_folder(request);
@@ -924,6 +927,120 @@ class Workspace {
     stmt.step_done();
     tx.commit();
     return json{{"id", id}, {"purged", removed}};
+  }
+
+  json bulk_document_action(const json& request) {
+    if (!request.contains("ids") || !request["ids"].is_array()) {
+      throw CoreError("缺少文档列表");
+    }
+    const std::string action = request.value("action", "");
+    if (action != "favorite" && action != "unfavorite" &&
+        action != "trash" && action != "restore" && action != "move") {
+      throw CoreError("不支持的批量操作");
+    }
+    std::string folder = request.value("folderId", "");
+    if (action == "move" && !folder.empty()) {
+      if (!safe_id(folder)) throw CoreError("文件夹 ID 非法");
+      Statement check(db_.get(), "SELECT 1 FROM folders WHERE id=?;");
+      check.bind_text(1, folder);
+      if (!check.step_row()) throw CoreError("文件夹不存在");
+    }
+    std::vector<std::string> ids;
+    for (const auto& value : request["ids"]) {
+      if (!value.is_string()) throw CoreError("文档 ID 非法");
+      const std::string id = value.get<std::string>();
+      if (!safe_id(id)) throw CoreError("文档 ID 非法");
+      ids.push_back(id);
+    }
+    if (ids.empty()) return json{{"ids", json::array()}, {"updated", 0}};
+
+    Transaction tx(db_);
+    int updated = 0;
+    for (const auto& id : ids) {
+      if (action == "favorite" || action == "unfavorite") {
+        Statement stmt(db_.get(),
+                       "UPDATE documents SET favorite=? WHERE id=?;");
+        stmt.bind_int64(1, action == "favorite" ? 1 : 0);
+        stmt.bind_text(2, id);
+        stmt.step_done();
+      } else if (action == "trash") {
+        Statement stmt(db_.get(),
+                       "UPDATE documents SET deleted_at=? WHERE id=?;");
+        stmt.bind_int64(1, now_ms());
+        stmt.bind_text(2, id);
+        stmt.step_done();
+      } else if (action == "restore") {
+        Statement stmt(db_.get(),
+                       "UPDATE documents SET deleted_at=NULL WHERE id=?;");
+        stmt.bind_text(1, id);
+        stmt.step_done();
+      } else {
+        Statement stmt(db_.get(),
+                       "UPDATE documents SET folder_id=? WHERE id=?;");
+        if (folder.empty()) {
+          stmt.bind_null(1);
+        } else {
+          stmt.bind_text(1, folder);
+        }
+        stmt.bind_text(2, id);
+        stmt.step_done();
+      }
+      ++updated;
+    }
+    tx.commit();
+    return json{{"ids", ids}, {"updated", updated}};
+  }
+
+  json bulk_purge_documents(const json& request) {
+    if (!request.contains("ids") || !request["ids"].is_array()) {
+      throw CoreError("缺少文档列表");
+    }
+    std::vector<std::string> ids;
+    for (const auto& value : request["ids"]) {
+      if (!value.is_string()) throw CoreError("文档 ID 非法");
+      const std::string id = value.get<std::string>();
+      if (!safe_id(id)) throw CoreError("文档 ID 非法");
+      ids.push_back(id);
+    }
+    if (ids.empty()) return json{{"ids", json::array()}, {"purged", 0}};
+
+    for (const auto& id : ids) {
+      std::error_code ec;
+      fs::remove(document_path(root_, id), ec);
+      if (ec) throw CoreError("删除文档失败: " + ec.message());
+    }
+    Transaction tx(db_);
+    for (const auto& id : ids) {
+      Statement stmt(db_.get(), "DELETE FROM documents WHERE id=?;");
+      stmt.bind_text(1, id);
+      stmt.step_done();
+    }
+    tx.commit();
+    return json{{"ids", ids}, {"purged", ids.size()}};
+  }
+
+  json empty_trash(const json&) {
+    std::vector<std::string> ids;
+    {
+      Statement stmt(db_.get(),
+                     "SELECT id FROM documents WHERE deleted_at IS NOT NULL;");
+      while (stmt.step_row()) ids.push_back(stmt.text(0));
+    }
+    if (ids.empty()) return json{{"ids", json::array()}, {"purged", 0}};
+    for (const auto& id : ids) {
+      if (!safe_id(id)) continue;
+      std::error_code ec;
+      fs::remove(document_path(root_, id), ec);
+      if (ec) throw CoreError("删除文档失败: " + ec.message());
+    }
+    Transaction tx(db_);
+    for (const auto& id : ids) {
+      Statement stmt(db_.get(), "DELETE FROM documents WHERE id=?;");
+      stmt.bind_text(1, id);
+      stmt.step_done();
+    }
+    tx.commit();
+    return json{{"ids", ids}, {"purged", ids.size()}};
   }
 
   json search(const json& request) {

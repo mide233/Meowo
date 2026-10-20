@@ -248,6 +248,72 @@ TEST(Core, FoldersFavoritesAndTrash) {
   EXPECT_EQ(active["items"].size(), 1u);
 }
 
+TEST(Core, BulkDocumentActionsAndEmptyTrash) {
+  TempDir temp;
+  Core core(temp.path);
+  const json folder = core.call({{"op", "create_folder"}, {"name", "批量"}});
+  const std::string folder_id = folder["id"];
+  const auto create = [&](const char* title) {
+    return core.call({{"op", "create_document"},
+                      {"title", title},
+                      {"kind", "paged"}})
+        .at("id")
+        .get<std::string>();
+  };
+  const std::string a = create("A");
+  const std::string b = create("B");
+  const std::string c = create("C");
+
+  const json favorite = core.call({{"op", "bulk_document_action"},
+                                   {"ids", {a, b}},
+                                   {"action", "favorite"}});
+  EXPECT_EQ(favorite["updated"], 2);
+  const json favorites =
+      core.call({{"op", "list_documents"}, {"favorites", true}});
+  EXPECT_EQ(favorites["items"].size(), 2u);
+
+  const json moved = core.call({{"op", "bulk_document_action"},
+                                {"ids", {a, b}},
+                                {"action", "move"},
+                                {"folderId", folder_id}});
+  EXPECT_EQ(moved["updated"], 2);
+  const json moved_list =
+      core.call({{"op", "list_documents"}, {"folderId", folder_id}});
+  EXPECT_EQ(moved_list["items"].size(), 2u);
+
+  const json trashed = core.call({{"op", "bulk_document_action"},
+                                  {"ids", {a, b}},
+                                  {"action", "trash"}});
+  EXPECT_EQ(trashed["updated"], 2);
+  const json trash =
+      core.call({{"op", "list_documents"}, {"trash", true}});
+  EXPECT_EQ(trash["items"].size(), 2u);
+
+  core.call({{"op", "bulk_document_action"},
+             {"ids", {a}},
+             {"action", "restore"}});
+  const json trash_after_restore =
+      core.call({{"op", "list_documents"}, {"trash", true}});
+  EXPECT_EQ(trash_after_restore["items"].size(), 1u);
+
+  const json purged = core.call({{"op", "bulk_purge_documents"},
+                                 {"ids", {b}}});
+  EXPECT_EQ(purged["purged"], 1);
+  EXPECT_FALSE(fs::exists(temp.path / "documents" / (b + ".meowo")));
+
+  core.call({{"op", "delete_document"}, {"id", c}});
+  const json emptied = core.call({{"op", "empty_trash"}});
+  EXPECT_EQ(emptied["purged"], 1);
+  EXPECT_FALSE(fs::exists(temp.path / "documents" / (c + ".meowo")));
+  const json empty_trash =
+      core.call({{"op", "list_documents"}, {"trash", true}});
+  EXPECT_TRUE(empty_trash["items"].empty());
+  const json remaining = core.call({{"op", "list_documents"}});
+  ASSERT_EQ(remaining["items"].size(), 1u);
+  EXPECT_EQ(remaining["items"][0]["id"], a);
+  EXPECT_TRUE(fs::exists(temp.path / "documents" / (a + ".meowo")));
+}
+
 TEST(Core, MarkdownImportCreatesBodyText) {
   TempDir temp;
   Core core(temp.path);
