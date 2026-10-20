@@ -105,6 +105,52 @@ void main() {
     expect(await _pixelColor(png, 20, 40), const Color(0xFFFF0000));
   });
 
+  test('background painter repaints when a PNG asset arrives late', () async {
+    final document = _document();
+    final page = _page();
+    final images = <String, ui.Image>{};
+    final vectors = <String, BookVectorPage>{};
+    final before = BookBackgroundPainter(
+      document: document,
+      page: page,
+      scale: 1,
+      images: images,
+      vectors: vectors,
+    );
+    final unchanged = BookBackgroundPainter(
+      document: document,
+      page: page,
+      scale: 1,
+      images: images,
+      vectors: vectors,
+    );
+    expect(unchanged.shouldRepaint(before), isFalse);
+    images['asset_png'] = await _solidImage(const Color(0xFFFF0000));
+    final after = BookBackgroundPainter(
+      document: document,
+      page: page,
+      scale: 1,
+      images: images,
+      vectors: vectors,
+    );
+    expect(after.shouldRepaint(unchanged), isTrue);
+
+    final vector = (await loadBookVectorPage(_vectorSvg))!;
+    vectors['page_test'] = vector;
+    final afterVector = BookBackgroundPainter(
+      document: document,
+      page: page,
+      scale: 1,
+      images: images,
+      vectors: vectors,
+    );
+    expect(afterVector.shouldRepaint(after), isTrue);
+    for (final image in images.values) {
+      image.dispose();
+    }
+    vector.dispose();
+  });
+
   test('background painter stays sharp when zoomed', () async {
     final vector = (await loadBookVectorPage(_vectorSvg))!;
     addTearDown(vector.dispose);

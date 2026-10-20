@@ -17,6 +17,7 @@ constexpr float kMaxRenderPixels = 5000.0f;
 constexpr int kMetaBuffer = 512;
 // A single page is returned through JSON/FFI; keep the transfer bounded.
 constexpr size_t kMaxSvgBytes = 24ull * 1024ull * 1024ull;
+constexpr size_t kMaxBatchSvgBytes = 48ull * 1024ull * 1024ull;
 // vector_graphics_compiler rejects documents with more than 1000 <use>
 // expansions. Font glyph references are inlined below; anything left is
 // treated as unsupported so the caller keeps the PNG snapshot.
@@ -362,12 +363,27 @@ std::vector<MuPdfVectorPage> render_pdf_pages_svg(
       fz_throw(ctx, FZ_ERROR_ARGUMENT, "文档已加密，保留位图页面");
     }
     const int page_count = fz_count_pages(ctx, doc);
+    size_t total_svg_bytes = 0;
+    bool batch_full = false;
     for (auto& result : results) {
+      if (batch_full) {
+        result.error = "批量矢量内容过大";
+        continue;
+      }
       if (result.pageIndex < 0 || result.pageIndex >= page_count) {
         result.error = "页面序号超出范围";
         continue;
       }
       render_pdf_page_svg(ctx, doc, result.pageIndex, result);
+      if (result.ok) {
+        total_svg_bytes += result.svg.size();
+        if (total_svg_bytes > kMaxBatchSvgBytes) {
+          result.ok = false;
+          result.svg.clear();
+          result.error = "批量矢量内容过大";
+          batch_full = true;
+        }
+      }
     }
   }
   fz_catch(ctx) {

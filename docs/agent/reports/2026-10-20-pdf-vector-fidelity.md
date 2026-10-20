@@ -74,7 +74,7 @@ PNG 快照仍然保留并继续作为：
 - `scripts/test_all.sh`：
   - CTest 1/1，10 个 gtest 用例通过（新增 PDF 矢量导入/回退用例）。
   - `flutter analyze` clean。
-  - Flutter/Dart 85 个测试全部通过（含新增 7 个矢量/加密用例）。
+  - Flutter/Dart 86 个测试全部通过（含新增 8 个矢量/加密/重绘用例）。
 - 新增核心测试：
   - `PdfImportKeepsRasterFallbackAndRendersVectorPages`：导入 → `vector == "svg"` → 页 0/1 SVG 输出、无 `font_` `<use>`、PNG 资产仍在。
   - `RasterBookRejectsVectorPageRequests`：旧/回退文档拒绝矢量请求且 PNG 引用不变。
@@ -83,7 +83,7 @@ PNG 快照仍然保留并继续作为：
   - `test/pdf_vector_ui_test.dart`：真实 PDF 导入后编辑器中出现已解析矢量背景（后台 isolate）。
   - `test/core_test.dart`：PDF 导入矢量标记 + SVG op；EPUB 保持 `raster` 且拒绝矢量。
 - Linux release：`flutter build linux --release` 成功；10 秒冒烟 `exit 124`（超时正常退出，无崩溃/异常堆栈）。
-- Android arm64 release：`scripts/build_android_apk.sh` 成功，APK 32,195,525 bytes，SHA256 `f456b742963aa741dba88b8a703a216cb22c1446c4c623b09898e320b11aa304`。
+- Android arm64 release：`scripts/build_android_apk.sh` 成功，APK 32,195,525 bytes，SHA256 `af32f58e6737aafaa84f0bcce900aa6c58b60357378d3f5ca7da19ca48d3bfbe`。
 - 未在真实 Android 设备上做手写笔帧率/内存验收。
 
 ## 5. 格式兼容

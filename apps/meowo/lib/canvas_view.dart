@@ -1166,13 +1166,23 @@ class BookBackgroundPainter extends CustomPainter {
     required this.scale,
     required this.images,
     required this.vectors,
-  });
+  }) : imageCount = images.length,
+       vectorCount = vectors.length,
+       backgroundImage = images[page['sourceAssetId']],
+       backgroundVector = vectors[page['id']];
 
   final Map<String, dynamic> document;
   final Map<String, dynamic> page;
   final double scale;
   final Map<String, ui.Image> images;
   final Map<String, BookVectorPage> vectors;
+
+  /// Captured at construction because the editor mutates the source maps in
+  /// place; comparing the map references alone cannot detect a late PNG/SVG.
+  final int imageCount;
+  final int vectorCount;
+  final ui.Image? backgroundImage;
+  final BookVectorPage? backgroundVector;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -1188,13 +1198,13 @@ class BookBackgroundPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant BookBackgroundPainter oldDelegate) {
-    final pageId = page['id'];
     return oldDelegate.scale != scale ||
         oldDelegate.document != document ||
         oldDelegate.page != page ||
-        oldDelegate.images != images ||
-        oldDelegate.vectors.length != vectors.length ||
-        oldDelegate.vectors[pageId] != vectors[pageId];
+        oldDelegate.imageCount != imageCount ||
+        oldDelegate.backgroundImage != backgroundImage ||
+        oldDelegate.vectorCount != vectorCount ||
+        oldDelegate.backgroundVector != backgroundVector;
   }
 }
 

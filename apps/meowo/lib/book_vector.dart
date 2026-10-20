@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
@@ -51,6 +52,8 @@ void paintBookVector(Canvas canvas, Rect rect, BookVectorPage page) {
 /// page and its neighbours, disposing pictures as pages move out of range.
 class BookVectorCache {
   final _pages = <String, BookVectorPage>{};
+  final _retired = <String, BookVectorPage>{};
+  final _retireTimers = <String, Timer>{};
   final _pending = <String, Future<BookVectorPage?>>{};
   final _unavailable = <String>{};
   int _epoch = 0;
@@ -70,6 +73,12 @@ class BookVectorCache {
   Future<BookVectorPage?> load(String key, String? svg) async {
     final existing = _pages[key];
     if (existing != null) return existing;
+    final retired = _retired.remove(key);
+    if (retired != null) {
+      _retireTimers.remove(key)?.cancel();
+      _pages[key] = retired;
+      return retired;
+    }
     if (svg == null || svg.isEmpty || _unavailable.contains(key)) return null;
     final pending = _pending[key];
     if (pending != null) return pending;
@@ -92,19 +101,39 @@ class BookVectorCache {
   }
 
   /// Drops every picture whose cache key is not in [keep].
+  ///
+  /// Removal is deferred briefly because a page-slide transition keeps the
+  /// outgoing canvas mounted for 240 ms; disposing its picture immediately
+  /// would leave the old widget painting a disposed Picture.
   void retain(Set<String> keep) {
     final remove = _pages.keys.where((key) => !keep.contains(key)).toList();
     for (final key in remove) {
-      _pages.remove(key)?.dispose();
+      final page = _pages.remove(key);
+      if (page == null) continue;
+      _retireTimers.remove(key)?.cancel();
+      _retired.remove(key)?.dispose();
+      _retired[key] = page;
+      _retireTimers[key] = Timer(const Duration(milliseconds: 500), () {
+        _retireTimers.remove(key);
+        _retired.remove(key)?.dispose();
+      });
     }
   }
 
   void dispose() {
     _epoch += 1;
+    for (final timer in _retireTimers.values) {
+      timer.cancel();
+    }
+    _retireTimers.clear();
     for (final page in _pages.values) {
       page.dispose();
     }
+    for (final page in _retired.values) {
+      page.dispose();
+    }
     _pages.clear();
+    _retired.clear();
     _pending.clear();
     _unavailable.clear();
   }
