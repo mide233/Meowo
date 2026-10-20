@@ -101,7 +101,11 @@ PNG 快照仍然保留并继续作为：
 - 没有对旧文档自动补生成矢量；用户重新导入 PDF 才获得 `vector` 标记。
 - 未实现 PDF 文本选择/搜索 UI 的改动；原有 `sourceText` 全文搜索保持不变。
 
-## 7. 复现命令
+## 7. 实现提交
+
+- `f479f35`（`feat(book): render PDF pages as on-demand vector backgrounds`）。
+
+## 8. 复现命令
 
 ```bash
 scripts/test_all.sh
