@@ -1538,7 +1538,9 @@ class Workspace {
     if (doc.value("kind", "") != "book") {
       throw CoreError("只有喵书籍支持矢量 PDF 导出");
     }
-    const json pages = doc.value("pages", json::array());
+    const json pages = doc.contains("pages") && doc["pages"].is_array()
+                           ? doc["pages"]
+                           : json::array();
     if (pages.empty()) throw CoreError("文档没有页面");
 
     std::vector<int> indexes;
@@ -1570,7 +1572,10 @@ class Workspace {
       }
     }
 
-    const json source = doc.value("bookSource", json::object());
+    const json source = doc.contains("bookSource") &&
+                                doc["bookSource"].is_object()
+                            ? doc["bookSource"]
+                            : json::object();
     const std::string source_mime =
         source.is_object() ? json_value_or<std::string>(source, "mime", "") : "";
     const std::string source_asset_id =
@@ -1623,7 +1628,9 @@ class Workspace {
     export_request.cancelPath = cancel_path;
     export_request.pages.reserve(indexes.size());
 
-    const json paper = doc.value("paper", json::object());
+    const json paper = doc.contains("paper") && doc["paper"].is_object()
+                           ? doc["paper"]
+                           : json::object();
     for (size_t output_index = 0; output_index < indexes.size();
          ++output_index) {
       const int document_index = indexes[output_index];

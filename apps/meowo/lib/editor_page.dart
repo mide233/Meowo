@@ -1290,7 +1290,7 @@ class _EditorPageState extends State<EditorPage> {
       await _exportBookPdf(doc);
       return;
     }
-    await _exportRasterPdf(doc);
+    await _exportVectorPdf(doc);
   }
 
   Future<List<int>?> _chooseBookPdfRange(int pageCount) async {
@@ -1717,7 +1717,7 @@ class _EditorPageState extends State<EditorPage> {
     );
   }
 
-  Future<void> _exportRasterPdf(Map<String, dynamic> doc) async {
+  Future<void> _exportVectorPdf(Map<String, dynamic> doc) async {
     final pages = doc['pages'] as List;
     final allPages = doc['kind'] != 'infinite' && pages.length > 1;
     bool exportAll = false;
