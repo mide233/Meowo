@@ -4,6 +4,8 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import 'ink_ops.dart';
+
 class CanvasView extends StatefulWidget {
   const CanvasView({
     super.key,
@@ -14,9 +16,18 @@ class CanvasView extends StatefulWidget {
     required this.width,
     required this.activeLayerId,
     required this.images,
+    required this.selectionIds,
+    required this.selectionBounds,
+    required this.lassoRect,
     required this.onStroke,
     required this.onErase,
+    required this.onEraseStart,
+    required this.onEraseEnd,
     required this.onElementTap,
+    required this.onSelection,
+    required this.onSelectionMove,
+    required this.onSelectionScale,
+    required this.onSelectionGestureEnd,
   });
 
   final Map<String, dynamic> document;
@@ -26,6 +37,9 @@ class CanvasView extends StatefulWidget {
   final double width;
   final String activeLayerId;
   final Map<String, ui.Image> images;
+  final Set<String> selectionIds;
+  final Rect? selectionBounds;
+  final bool lassoRect;
   final void Function(
     List<Offset> points,
     List<double> pressures,
@@ -33,7 +47,13 @@ class CanvasView extends StatefulWidget {
   )
   onStroke;
   final void Function(Offset point) onErase;
+  final VoidCallback onEraseStart;
+  final VoidCallback onEraseEnd;
   final void Function(Map<String, dynamic> element) onElementTap;
+  final void Function(List<Offset> polygon, bool rectangle) onSelection;
+  final void Function(Offset delta) onSelectionMove;
+  final void Function(Rect bounds) onSelectionScale;
+  final VoidCallback onSelectionGestureEnd;
 
   @override
   State<CanvasView> createState() => _CanvasViewState();
@@ -41,9 +61,15 @@ class CanvasView extends StatefulWidget {
 
 class _CanvasViewState extends State<CanvasView> {
   final List<Offset> _points = [];
+  final List<Offset> _lasso = [];
   final List<double> _pressures = [];
   bool _drawing = false;
+  bool _selecting = false;
+  String _selectGesture = '';
   Offset? _eraseLast;
+  Offset? _selectStart;
+  int _scaleHandle = -1;
+  Rect? _scaleStartBounds;
   double _lastScale = 1.0;
 
   @override
@@ -105,6 +131,10 @@ class _CanvasViewState extends State<CanvasView> {
                         inProgressColor: widget.color,
                         inProgressWidth: widget.width,
                         inProgressHighlighter: widget.tool == 'highlighter',
+                        selectedIds: widget.selectionIds,
+                        selectionBounds: widget.selectionBounds,
+                        lassoPoints: _lasso,
+                        lassoRect: widget.lassoRect,
                       ),
                     ),
                   ),
@@ -121,8 +151,13 @@ class _CanvasViewState extends State<CanvasView> {
 
   void _onDown(PointerDownEvent event, double scale) {
     final point = _toPage(event.localPosition, scale);
+    if (widget.tool == 'select') {
+      _selectDown(point);
+      return;
+    }
     if (widget.tool == 'eraser') {
       _eraseLast = point;
+      widget.onEraseStart();
       widget.onErase(point);
       return;
     }
@@ -140,6 +175,10 @@ class _CanvasViewState extends State<CanvasView> {
 
   void _onMove(PointerMoveEvent event, double scale) {
     final point = _toPage(event.localPosition, scale);
+    if (widget.tool == 'select') {
+      _selectMove(point, scale);
+      return;
+    }
     if (widget.tool == 'eraser') {
       if (_eraseLast == null || (point - _eraseLast!).distance > 4) {
         _eraseLast = point;
@@ -155,8 +194,14 @@ class _CanvasViewState extends State<CanvasView> {
   }
 
   void _onUp(PointerUpEvent event, double scale) {
+    final point = _toPage(event.localPosition, scale);
+    if (widget.tool == 'select') {
+      _selectUp(point, scale);
+      return;
+    }
     if (widget.tool == 'eraser') {
       _eraseLast = null;
+      widget.onEraseEnd();
       return;
     }
     if (!_drawing) return;
@@ -172,7 +217,169 @@ class _CanvasViewState extends State<CanvasView> {
     }
   }
 
+  void _selectDown(Offset point) {
+    final bounds = widget.selectionBounds;
+    if (bounds != null) {
+      final handle = _hitHandle(point, bounds);
+      if (handle >= 0) {
+        setState(() {
+          _selecting = true;
+          _selectGesture = 'scale';
+          _scaleHandle = handle;
+          _scaleStartBounds = bounds;
+        });
+        return;
+      }
+      final tolerance = 8 / _lastScale;
+      if (bounds.inflate(tolerance).contains(point)) {
+        setState(() {
+          _selecting = true;
+          _selectGesture = 'move';
+          _selectStart = point;
+        });
+        return;
+      }
+    }
+    setState(() {
+      _selecting = true;
+      _selectGesture = 'lasso';
+      _selectStart = point;
+      _lasso
+        ..clear()
+        ..add(point);
+    });
+  }
+
+  void _selectMove(Offset point, double scale) {
+    if (!_selecting) return;
+    if (_selectGesture == 'move') {
+      final start = _selectStart;
+      if (start == null) return;
+      widget.onSelectionMove(point - start);
+      return;
+    }
+    if (_selectGesture == 'scale') {
+      final startBounds = _scaleStartBounds;
+      if (startBounds == null) return;
+      final bounds = _resizedBounds(startBounds, _scaleHandle, point);
+      widget.onSelectionScale(bounds);
+      return;
+    }
+    if (_selectGesture == 'lasso') {
+      if (_lasso.isEmpty || (point - _lasso.last).distance > 1.5 / scale) {
+        setState(() => _lasso.add(point));
+      }
+    }
+  }
+
+  void _selectUp(Offset point, double scale) {
+    if (!_selecting) return;
+    if (_selectGesture == 'lasso') {
+      if (_lasso.isEmpty || (point - _lasso.last).distance > 1.5 / scale) {
+        _lasso.add(point);
+      }
+      final start = _selectStart;
+      if (start == null) {
+        _resetSelectionGesture();
+        return;
+      }
+      final polygon = widget.lassoRect
+          ? _rectanglePolygon(start, point)
+          : List<Offset>.from(_lasso);
+      if (polygon.length >= 3) {
+        widget.onSelection(polygon, widget.lassoRect);
+      }
+    } else {
+      widget.onSelectionGestureEnd();
+    }
+    _resetSelectionGesture();
+  }
+
+  void _resetSelectionGesture() {
+    if (!mounted) return;
+    setState(() {
+      _selecting = false;
+      _selectGesture = '';
+      _selectStart = null;
+      _scaleHandle = -1;
+      _scaleStartBounds = null;
+      _lasso.clear();
+    });
+  }
+
+  List<Offset> _rectanglePolygon(Offset start, Offset end) {
+    final rect = Rect.fromPoints(start, end);
+    return [rect.topLeft, rect.topRight, rect.bottomRight, rect.bottomLeft];
+  }
+
+  int _hitHandle(Offset point, Rect bounds) {
+    final corners = [
+      bounds.topLeft,
+      bounds.topRight,
+      bounds.bottomRight,
+      bounds.bottomLeft,
+    ];
+    final threshold = 14 / _lastScale;
+    for (var i = 0; i < corners.length; i++) {
+      if ((point - corners[i]).distance <= threshold) return i;
+    }
+    return -1;
+  }
+
+  Rect _resizedBounds(Rect start, int handle, Offset point) {
+    var left = start.left;
+    var top = start.top;
+    var right = start.right;
+    var bottom = start.bottom;
+    switch (handle) {
+      case 0:
+        left = point.dx;
+        top = point.dy;
+        break;
+      case 1:
+        right = point.dx;
+        top = point.dy;
+        break;
+      case 2:
+        right = point.dx;
+        bottom = point.dy;
+        break;
+      case 3:
+        left = point.dx;
+        bottom = point.dy;
+        break;
+    }
+    const minimum = 16.0;
+    if ((right - left).abs() < minimum) {
+      if (handle == 0 || handle == 3) {
+        left = right - minimum;
+      } else {
+        right = left + minimum;
+      }
+    }
+    if ((bottom - top).abs() < minimum) {
+      if (handle == 0 || handle == 1) {
+        top = bottom - minimum;
+      } else {
+        bottom = top + minimum;
+      }
+    }
+    return Rect.fromLTRB(
+      math.min(left, right),
+      math.min(top, bottom),
+      math.max(left, right),
+      math.max(top, bottom),
+    );
+  }
+
   void _cancel() {
+    if (widget.tool == 'eraser') {
+      _eraseLast = null;
+      widget.onEraseEnd();
+    }
+    if (widget.tool == 'select') {
+      _resetSelectionGesture();
+    }
     setState(() {
       _drawing = false;
       _points.clear();
@@ -187,6 +394,7 @@ class _CanvasViewState extends State<CanvasView> {
   }
 
   void _onTapUp(TapUpDetails details) {
+    if (widget.selectionIds.isNotEmpty) return;
     final point = details.localPosition / _lastScale;
     final layers = (widget.page['layers'] as List? ?? const []);
     for (final layer in layers.reversed) {
@@ -240,6 +448,10 @@ class MeowoCanvasPainter extends CustomPainter {
     required this.inProgressColor,
     required this.inProgressWidth,
     required this.inProgressHighlighter,
+    this.selectedIds = const <String>{},
+    this.selectionBounds,
+    this.lassoPoints = const <Offset>[],
+    this.lassoRect = false,
   });
 
   final Map<String, dynamic> document;
@@ -251,6 +463,10 @@ class MeowoCanvasPainter extends CustomPainter {
   final Color inProgressColor;
   final double inProgressWidth;
   final bool inProgressHighlighter;
+  final Set<String> selectedIds;
+  final Rect? selectionBounds;
+  final List<Offset> lassoPoints;
+  final bool lassoRect;
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -295,9 +511,60 @@ class MeowoCanvasPainter extends CustomPainter {
         inProgressWidth,
         inProgressHighlighter,
         1.0,
+        pressureCurveFor(document, inProgressHighlighter),
       );
     }
+    _paintSelection(canvas);
     canvas.restore();
+  }
+
+  void _paintSelection(Canvas canvas) {
+    final accent = const Color(0xFFB4692A);
+    if (lassoPoints.length >= 2) {
+      final path = Path()..moveTo(lassoPoints.first.dx, lassoPoints.first.dy);
+      if (lassoRect) {
+        final rect = Rect.fromPoints(lassoPoints.first, lassoPoints.last);
+        path
+          ..reset()
+          ..addRect(rect);
+      } else {
+        for (final point in lassoPoints.skip(1)) {
+          path.lineTo(point.dx, point.dy);
+        }
+        path.close();
+      }
+      canvas.drawPath(path, Paint()..color = accent.withValues(alpha: 0.08));
+      canvas.drawPath(
+        path,
+        Paint()
+          ..color = accent.withValues(alpha: 0.8)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2 / scale,
+      );
+    }
+    final bounds = selectionBounds;
+    if (bounds == null) return;
+    final paint = Paint()
+      ..color = accent
+      ..style = PaintingStyle.stroke
+      ..strokeWidth = 1.5 / scale;
+    canvas.drawRect(bounds, paint);
+    final handleSize = 9 / scale;
+    final fill = Paint()..color = const Color(0xFFFFFCF5);
+    for (final corner in [
+      bounds.topLeft,
+      bounds.topRight,
+      bounds.bottomRight,
+      bounds.bottomLeft,
+    ]) {
+      final rect = Rect.fromCenter(
+        center: corner,
+        width: handleSize,
+        height: handleSize,
+      );
+      canvas.drawRect(rect, fill);
+      canvas.drawRect(rect, paint);
+    }
   }
 
   void _paintPaper(Canvas canvas, Rect rect) {
@@ -357,6 +624,7 @@ class MeowoCanvasPainter extends CustomPainter {
           (element['width'] as num?)?.toDouble() ?? 2,
           element['highlighter'] == true,
           opacity * ((element['opacity'] as num?)?.toDouble() ?? 1.0),
+          pressureCurveFor(document, element['highlighter'] == true),
         );
       case 'text':
         _paintTextElement(canvas, element);
@@ -375,6 +643,7 @@ class MeowoCanvasPainter extends CustomPainter {
     double width,
     bool highlighter,
     double opacity,
+    List<Offset> curve,
   ) {
     if (points.isEmpty) return;
     final paint = Paint()
@@ -386,9 +655,11 @@ class MeowoCanvasPainter extends CustomPainter {
       ..strokeJoin = StrokeJoin.round
       ..blendMode = highlighter ? BlendMode.multiply : BlendMode.srcOver;
     if (points.length == 1) {
+      final raw = pressures.isNotEmpty ? pressures.first : 1.0;
+      final pressure = applyPressureCurve(raw, curve);
       canvas.drawCircle(
         points.first,
-        width * 0.5,
+        width * (0.45 + pressure * 0.85) * 0.5,
         paint..style = PaintingStyle.fill,
       );
       return;
@@ -396,7 +667,10 @@ class MeowoCanvasPainter extends CustomPainter {
     for (var i = 1; i < points.length; i++) {
       final p = pressures.length > i ? pressures[i] : 1.0;
       final start = pressures.length > i - 1 ? pressures[i - 1] : p;
-      final pressure = ((p + start) / 2).clamp(0.1, 1.0);
+      final pressure =
+          ((applyPressureCurve(p, curve) + applyPressureCurve(start, curve)) /
+                  2)
+              .clamp(0.05, 1.0);
       paint.strokeWidth = width * (0.45 + pressure * 0.85);
       canvas.drawLine(points[i - 1], points[i], paint);
     }
@@ -562,11 +836,10 @@ class MeowoCanvasPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant MeowoCanvasPainter oldDelegate) {
-    return oldDelegate.document != document ||
-        oldDelegate.page != page ||
-        oldDelegate.scale != scale ||
-        oldDelegate.inProgress.isNotEmpty ||
-        oldDelegate.images != images;
+    // The alpha stores document/page payloads as mutable JSON maps. Their
+    // identity does not change when an element is added or moved, so repaint
+    // whenever the widget rebuilds to avoid stale ink/selection overlays.
+    return true;
   }
 }
 

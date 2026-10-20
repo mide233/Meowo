@@ -2,7 +2,7 @@
 
 > 本目录是所有 AI Agent 与协作者阅读、维护的项目事实来源（Single Source of Truth）。
 > 当前基线版本：`v1.0-baseline.1`（2026-10-20）  
-> 当前状态：负责人已完成 Q-001–Q-162 访谈；1.0 合并基线已冻结；**Alpha 初版已构建（Linux release + Android arm64 APK）**。交付与缺口见 [reports/2026-10-20-autonomous-1.0-delivery.md](reports/2026-10-20-autonomous-1.0-delivery.md)。
+> 当前状态：负责人已完成 Q-001–Q-162 访谈；1.0 合并基线已冻结；**Alpha.2 已构建（Linux release + Android arm64 APK）**，新增像素擦除、压感曲线与套索选择。交付与缺口见 [alpha.2 报告](reports/2026-10-20-alpha2-handwriting-core.md)。
 
 ---
 

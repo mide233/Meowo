@@ -14,6 +14,8 @@ import 'package:path_provider/path_provider.dart';
 
 import 'app_state.dart';
 import 'canvas_view.dart';
+import 'ink_ops.dart';
+import 'pressure_curve_dialog.dart';
 
 enum _SaveState { saved, saving, failed }
 
@@ -31,6 +33,18 @@ class _EditorPageState extends State<EditorPage> {
   final _undo = <String>[];
   final _redo = <String>[];
   final _images = <String, ui.Image>{};
+  final _selectedIds = <String>{};
+  final _clipboard = <Map<String, dynamic>>[];
+  String? _clipboardPageId;
+  final _transformOriginals = <String, Map<String, dynamic>>{};
+  Rect? _transformStartBounds;
+  bool _transformUndoPushed = false;
+  bool _lassoRect = false;
+  String _eraserMode = 'pixel';
+  bool _eraseAllLayers = false;
+  bool _eraseGestureActive = false;
+  bool _eraseUndoPushed = false;
+  bool _eraseChanged = false;
 
   String _tool = 'pen';
   Color _color = const Color(0xFF2B2A27);
@@ -66,6 +80,34 @@ class _EditorPageState extends State<EditorPage> {
     }
     _activeLayerId = layers.first['id'] as String?;
     return layers.first;
+  }
+
+  Map<String, dynamic>? _findElement(String id) {
+    for (final layer in _layers) {
+      for (final value in layer['elements'] as List? ?? const []) {
+        final element = value as Map;
+        if (element['id'] == id) return value as Map<String, dynamic>;
+      }
+    }
+    return null;
+  }
+
+  Rect? get _selectionBounds {
+    Rect? result;
+    for (final id in _selectedIds) {
+      final element = _findElement(id);
+      if (element == null) continue;
+      final bounds = elementBounds(element);
+      result = result == null ? bounds : result.expandToInclude(bounds);
+    }
+    return result;
+  }
+
+  void _clearSelection() {
+    _transformOriginals.clear();
+    _transformStartBounds = null;
+    if (_selectedIds.isEmpty) return;
+    setState(_selectedIds.clear);
   }
 
   @override
@@ -106,6 +148,10 @@ class _EditorPageState extends State<EditorPage> {
       _pageIndex = 0;
       _undo.clear();
       _redo.clear();
+      _selectedIds.clear();
+      _clipboard.clear();
+      _clipboardPageId = null;
+      _transformOriginals.clear();
       _activeLayerId = _layers.isEmpty ? null : _layers.first['id'] as String?;
       await _loadPageImages();
       if (!mounted) return;
@@ -230,6 +276,8 @@ class _EditorPageState extends State<EditorPage> {
     final previous = jsonDecode(_undo.removeLast()) as Map<String, dynamic>;
     _redo.add(current);
     state.setActiveDocument(previous);
+    _selectedIds.clear();
+    _transformOriginals.clear();
     _pageIndex = 0;
     _activeLayerId = _layers.isEmpty ? null : _layers.first['id'] as String?;
     _loadPageImages();
@@ -242,6 +290,8 @@ class _EditorPageState extends State<EditorPage> {
     final next = jsonDecode(_redo.removeLast()) as Map<String, dynamic>;
     _undo.add(current);
     state.setActiveDocument(next);
+    _selectedIds.clear();
+    _transformOriginals.clear();
     _pageIndex = 0;
     _activeLayerId = _layers.isEmpty ? null : _layers.first['id'] as String?;
     _loadPageImages();
@@ -253,6 +303,9 @@ class _EditorPageState extends State<EditorPage> {
     await _flushSave();
     setState(() {
       _pageIndex = index;
+      _selectedIds.clear();
+      _transformOriginals.clear();
+      _transformStartBounds = null;
       _activeLayerId = _layers.isEmpty ? null : _layers.first['id'] as String?;
     });
     await _loadPageImages();
@@ -289,34 +342,59 @@ class _EditorPageState extends State<EditorPage> {
     });
   }
 
+  void _eraseBegin() {
+    _eraseGestureActive = true;
+    _eraseUndoPushed = false;
+    _eraseChanged = false;
+  }
+
+  void _eraseEnd() {
+    _eraseGestureActive = false;
+    if (_eraseChanged) {
+      _scheduleSave();
+      setState(() {});
+    }
+  }
+
+  void _ensureEraseUndo() {
+    if (_eraseUndoPushed) return;
+    _pushUndo();
+    _eraseUndoPushed = true;
+  }
+
   void _eraseAt(Offset point) {
-    final layer = _activeLayer;
-    if (layer == null || layer['locked'] == true) return;
-    final elements = layer['elements'] as List;
-    final removed = <int>[];
-    for (var i = 0; i < elements.length; i++) {
-      final element = elements[i] as Map;
-      if (element['type'] != 'stroke') continue;
-      final points = element['points'] as List? ?? const [];
-      var hit = false;
-      for (final value in points) {
-        final p = value as List;
-        final dx = (p[0] as num).toDouble() - point.dx;
-        final dy = (p[1] as num).toDouble() - point.dy;
-        if (dx * dx + dy * dy < 100) {
-          hit = true;
-          break;
+    if (!_eraseGestureActive) _eraseBegin();
+    final candidates = _eraseAllLayers
+        ? _layers.where(
+            (layer) => layer['visible'] != false && layer['locked'] != true,
+          )
+        : [?_activeLayer];
+    var changed = false;
+    for (final layer in candidates) {
+      if (layer['locked'] == true) continue;
+      final elements = layer['elements'] as List? ?? const [];
+      for (var i = elements.length - 1; i >= 0; i--) {
+        final value = elements[i];
+        if (value is! Map || value['type'] != 'stroke') continue;
+        final stroke = Map<String, dynamic>.from(value);
+        final radius = ((stroke['width'] as num?)?.toDouble() ?? 2) * 0.5 + 8;
+        if (!strokeTouches(stroke, point, radius)) continue;
+        _ensureEraseUndo();
+        changed = true;
+        if (_eraserMode == 'stroke') {
+          elements.removeAt(i);
+          continue;
+        }
+        final parts = splitStroke(stroke, point, radius);
+        elements.removeAt(i);
+        for (var part = 0; part < parts.length; part++) {
+          elements.insert(i + part, parts[part]);
         }
       }
-      if (hit) removed.add(i);
     }
-    if (removed.isEmpty) return;
-    _pushUndo();
-    for (final index in removed.reversed) {
-      elements.removeAt(index);
-    }
+    if (!changed) return;
+    _eraseChanged = true;
     setState(() {});
-    _scheduleSave();
   }
 
   Future<String?> _markdownDialog(String initial, String title) async {
@@ -550,6 +628,184 @@ class _EditorPageState extends State<EditorPage> {
     }
   }
 
+  void _onSelection(List<Offset> polygon, bool rectangle) {
+    final selected = <String>{};
+    final bounds = boundsOfPoints(polygon);
+    for (final layer in _layers) {
+      if (layer['visible'] == false || layer['locked'] == true) continue;
+      for (final value in layer['elements'] as List? ?? const []) {
+        final element = value as Map<String, dynamic>;
+        if (element['locked'] == true) continue;
+        final elementRect = elementBounds(element);
+        final hit = rectangle
+            ? elementRect.overlaps(bounds)
+            : rectIntersectsPolygon(elementRect, polygon);
+        if (hit) selected.add(element['id'] as String);
+      }
+    }
+    _transformOriginals.clear();
+    _transformStartBounds = null;
+    setState(() {
+      _selectedIds
+        ..clear()
+        ..addAll(selected);
+    });
+  }
+
+  void _snapshotSelection() {
+    if (_transformOriginals.isNotEmpty) return;
+    for (final id in _selectedIds) {
+      final element = _findElement(id);
+      if (element == null) continue;
+      _transformOriginals[id] =
+          jsonDecode(jsonEncode(element)) as Map<String, dynamic>;
+    }
+    _transformStartBounds = _selectionBounds;
+    _transformUndoPushed = false;
+  }
+
+  void _ensureTransformUndo() {
+    if (_transformUndoPushed) return;
+    _pushUndo();
+    _transformUndoPushed = true;
+  }
+
+  void _replaceElement(String id, Map<String, dynamic> source) {
+    for (final layer in _layers) {
+      final elements = layer['elements'] as List? ?? const [];
+      for (var i = 0; i < elements.length; i++) {
+        final element = elements[i] as Map;
+        if (element['id'] == id) {
+          elements[i] = jsonDecode(jsonEncode(source)) as Map<String, dynamic>;
+          return;
+        }
+      }
+    }
+  }
+
+  void _applySelectionMove(Offset delta) {
+    if (_selectedIds.isEmpty || delta == Offset.zero) return;
+    _snapshotSelection();
+    _ensureTransformUndo();
+    for (final id in _selectedIds) {
+      final original = _transformOriginals[id];
+      if (original == null) continue;
+      _replaceElement(id, original);
+      final element = _findElement(id);
+      if (element != null) translateElement(element, delta);
+    }
+    setState(() {});
+  }
+
+  void _applySelectionScale(Rect bounds) {
+    if (_selectedIds.isEmpty) return;
+    _snapshotSelection();
+    final start = _transformStartBounds;
+    if (start == null || bounds.width < 1 || bounds.height < 1) return;
+    _ensureTransformUndo();
+    for (final id in _selectedIds) {
+      final original = _transformOriginals[id];
+      if (original == null) continue;
+      _replaceElement(id, original);
+      final element = _findElement(id);
+      if (element != null) scaleElement(original, element, start, bounds);
+    }
+    setState(() {});
+  }
+
+  void _endSelectionTransform() {
+    if (_transformOriginals.isEmpty) return;
+    final changed = _transformUndoPushed;
+    _transformOriginals.clear();
+    _transformStartBounds = null;
+    _transformUndoPushed = false;
+    if (changed) _scheduleSave();
+  }
+
+  void _copySelection() {
+    if (_selectedIds.isEmpty) return;
+    _clipboard.clear();
+    for (final layer in _layers) {
+      for (final value in layer['elements'] as List? ?? const []) {
+        final element = value as Map<String, dynamic>;
+        if (_selectedIds.contains(element['id'])) {
+          _clipboard.add(
+            jsonDecode(jsonEncode(element)) as Map<String, dynamic>,
+          );
+        }
+      }
+    }
+    _clipboardPageId = _page['id'] as String?;
+    _message('已复制 ${_clipboard.length} 个对象');
+  }
+
+  void _pasteClipboard() {
+    if (_clipboard.isEmpty) {
+      _message('剪贴板为空');
+      return;
+    }
+    final layer = _activeLayer;
+    if (layer == null || layer['locked'] == true) {
+      _message('当前图层已锁定');
+      return;
+    }
+    final samePage = _clipboardPageId == _page['id'];
+    final stamp = DateTime.now().microsecondsSinceEpoch;
+    final newIds = <String>[];
+    _transformOriginals.clear();
+    _transformStartBounds = null;
+    _mutate(() {
+      final elements = layer['elements'] as List;
+      for (var i = 0; i < _clipboard.length; i++) {
+        final copy =
+            jsonDecode(jsonEncode(_clipboard[i])) as Map<String, dynamic>;
+        final type = copy['type'] as String? ?? 'element';
+        final id = '${type}_${stamp}_$i';
+        copy['id'] = id;
+        if (samePage) translateElement(copy, const Offset(12, 12));
+        elements.add(copy);
+        newIds.add(id);
+      }
+      _selectedIds
+        ..clear()
+        ..addAll(newIds);
+    });
+  }
+
+  void _deleteSelection() {
+    if (_selectedIds.isEmpty) return;
+    _mutate(() {
+      for (final layer in _layers) {
+        final elements = layer['elements'] as List? ?? const [];
+        elements.removeWhere(
+          (value) => value is Map && _selectedIds.contains(value['id']),
+        );
+      }
+      _selectedIds.clear();
+      _transformOriginals.clear();
+    });
+  }
+
+  Future<void> _editPressureCurve() async {
+    final highlighter = _tool == 'highlighter';
+    final result = await showPressureCurveDialog(
+      context,
+      curve: pressureCurveFor(_doc!, highlighter),
+      color: _color,
+      title: highlighter ? '荧光笔压感曲线' : '笔压感曲线',
+    );
+    if (result == null) return;
+    _mutate(() {
+      final settings =
+          (_doc!['brushSettings'] as Map<String, dynamic>?) ??
+          <String, dynamic>{};
+      _doc!['brushSettings'] = settings;
+      settings[highlighter ? 'highlighter' : 'pen'] = {
+        'curve': pressureCurveToJson(result),
+      };
+    });
+  }
+
   Future<void> _showAttachment(Map<String, dynamic> element) async {
     final size = (element['size'] as num?)?.toInt() ?? 0;
     await showDialog<void>(
@@ -685,6 +941,7 @@ class _EditorPageState extends State<EditorPage> {
     _mutate(() {
       (_doc!['pages'] as List).insert(_pageIndex + 1, page);
       _pageIndex += 1;
+      _selectedIds.clear();
       _activeLayerId = (page['layers'] as List).first['id'] as String;
     });
     await _loadPageImages();
@@ -704,6 +961,7 @@ class _EditorPageState extends State<EditorPage> {
     _mutate(() {
       pages.removeAt(_pageIndex);
       if (_pageIndex >= pages.length) _pageIndex = pages.length - 1;
+      _selectedIds.clear();
       _activeLayerId = _layers.isEmpty ? null : _layers.first['id'] as String?;
     });
     await _loadPageImages();
@@ -912,13 +1170,22 @@ class _EditorPageState extends State<EditorPage> {
                       width: _width,
                       activeLayerId: _activeLayerId ?? '',
                       images: _images,
+                      selectionIds: _selectedIds,
+                      selectionBounds: _selectionBounds,
+                      lassoRect: _lassoRect,
                       onStroke: _addStroke,
                       onErase: _eraseAt,
+                      onEraseStart: _eraseBegin,
+                      onEraseEnd: _eraseEnd,
                       onElementTap: (element) {
                         _tool = 'select';
                         setState(() {});
                         _onElementTap(element);
                       },
+                      onSelection: _onSelection,
+                      onSelectionMove: _applySelectionMove,
+                      onSelectionScale: _applySelectionScale,
+                      onSelectionGestureEnd: _endSelectionTransform,
                     ),
                   ),
                 ),
@@ -927,8 +1194,63 @@ class _EditorPageState extends State<EditorPage> {
             ],
           ),
         ),
+        if (_selectedIds.isNotEmpty) _selectionBar(context),
         _pageBar(context),
       ],
+    );
+  }
+
+  Widget _selectionBar(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Material(
+      color: scheme.secondaryContainer,
+      child: SizedBox(
+        height: 44,
+        child: Row(
+          children: [
+            const SizedBox(width: 10),
+            Text('已选 ${_selectedIds.length}'),
+            const SizedBox(width: 8),
+            Expanded(
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    TextButton.icon(
+                      onPressed: _copySelection,
+                      icon: const Icon(Icons.copy_all_outlined, size: 18),
+                      label: const Text('复制'),
+                    ),
+                    TextButton.icon(
+                      onPressed: _pasteClipboard,
+                      icon: const Icon(Icons.content_paste_outlined, size: 18),
+                      label: const Text('粘贴'),
+                    ),
+                    TextButton.icon(
+                      onPressed: _deleteSelection,
+                      icon: const Icon(Icons.delete_outline, size: 18),
+                      label: const Text('删除'),
+                    ),
+                    IconButton(
+                      tooltip: _lassoRect ? '自由套索' : '矩形选择',
+                      onPressed: () => setState(() => _lassoRect = !_lassoRect),
+                      icon: Icon(
+                        _lassoRect ? Icons.crop_square : Icons.gesture,
+                        size: 20,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '取消选择',
+                      onPressed: _clearSelection,
+                      icon: const Icon(Icons.close, size: 20),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -994,6 +1316,49 @@ class _EditorPageState extends State<EditorPage> {
                   icon: const Icon(Icons.redo),
                 ),
               ],
+              if (_tool == 'eraser')
+                PopupMenuButton<String>(
+                  tooltip: '橡皮设置',
+                  onSelected: (value) {
+                    setState(() {
+                      if (value == 'pixel' || value == 'stroke') {
+                        _eraserMode = value;
+                      } else if (value == 'layer' || value == 'all') {
+                        _eraseAllLayers = value == 'all';
+                      }
+                    });
+                  },
+                  itemBuilder: (context) => [
+                    PopupMenuItem(
+                      value: 'pixel',
+                      child: Text('${_eraserMode == 'pixel' ? '✓ ' : ''}像素擦除'),
+                    ),
+                    PopupMenuItem(
+                      value: 'stroke',
+                      child: Text('${_eraserMode == 'stroke' ? '✓ ' : ''}整笔擦除'),
+                    ),
+                    const PopupMenuDivider(),
+                    PopupMenuItem(
+                      value: 'layer',
+                      child: Text('${!_eraseAllLayers ? '✓ ' : ''}仅当前图层'),
+                    ),
+                    PopupMenuItem(
+                      value: 'all',
+                      child: Text('${_eraseAllLayers ? '✓ ' : ''}所有可见图层'),
+                    ),
+                  ],
+                  icon: Icon(
+                    _eraserMode == 'pixel'
+                        ? Icons.auto_fix_normal
+                        : Icons.cleaning_services_outlined,
+                  ),
+                ),
+              if (_tool == 'select')
+                IconButton(
+                  tooltip: _lassoRect ? '矩形选择' : '自由套索',
+                  onPressed: () => setState(() => _lassoRect = !_lassoRect),
+                  icon: Icon(_lassoRect ? Icons.crop_square : Icons.gesture),
+                ),
               if (!wide)
                 IconButton(
                   tooltip: '图层',
@@ -1100,6 +1465,7 @@ class _EditorPageState extends State<EditorPage> {
                           } else {
                             setState(() {
                               _tool = tool.$1;
+                              if (_tool != 'select') _selectedIds.clear();
                               if (_tool == 'highlighter') _width = 14;
                               if (_tool == 'pen') _width = 2.5;
                             });
@@ -1108,6 +1474,12 @@ class _EditorPageState extends State<EditorPage> {
                       ),
                     const Divider(height: 18),
                     _ColorButton(color: _color, onTap: _chooseColor),
+                    if (_tool == 'pen' || _tool == 'highlighter')
+                      IconButton(
+                        tooltip: '压感曲线',
+                        onPressed: _editPressureCurve,
+                        icon: const Icon(Icons.show_chart),
+                      ),
                     const SizedBox(height: 6),
                     RotatedBox(
                       quarterTurns: 3,

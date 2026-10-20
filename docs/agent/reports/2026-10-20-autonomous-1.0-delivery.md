@@ -1,5 +1,9 @@
 # 2026-10-20 · 自治实现交付报告（Alpha）
 
+> 后续进展：Alpha.2 手写核心补齐见
+> `docs/agent/reports/2026-10-20-alpha2-handwriting-core.md`。
+> 本报告保留 Alpha.1 的构建与验收证据。
+
 - 状态：`Alpha / 可运行初版`
 - 版本：`1.0.0-alpha.1`
 - 日期：2026-10-20
@@ -23,10 +27,10 @@
 APK SHA-256：
 
 ```text
-dc90a7e683e2d4bca638a7ea4b3421c38ebf6b4fc708f3f20be6313e2ba09a5d
+50b393844d40b0f770f3e878fd2dd06222d482f9fefd5ef7c4e0e82a16dfc7e4
 ```
 
-Linux 可执行文件 SHA-256：
+Linux 压缩包 SHA-256：
 
 ```text
 291bd7179ff21a97cd5f7106a93ec11d5ac1e8d04d5a34c861c62c9e2aba5203
