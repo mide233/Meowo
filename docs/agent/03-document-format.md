@@ -71,9 +71,10 @@ WAL 模式可能产生：
 
 ```text
 <workspace>/locks/<document-id>.lock
+<workspace>/.meowo.lock          # Alpha.5 工作区级独占锁
 ```
 
-锁文件不属于文档格式；异常退出后必须可安全判定陈旧锁。
+锁文件不属于文档格式；异常退出后必须可安全判定陈旧锁。Alpha.5 实际使用工作区根目录 `.meowo.lock`，尚未实现单文档锁。
 
 ### 2.3 一致性快照
 
@@ -646,6 +647,7 @@ CREATE VIRTUAL TABLE catalog_search USING fts5(
 - 锁机制优先使用 OS 级 advisory lock（POSIX `flock`/Windows `LockFileEx`），锁文件为临时 sidecar。
 - 不能依赖锁文件内容作为唯一锁；异常退出后由 OS 释放，或通过进程/超时判定清理。
 - 无法获取写锁时，以只读方式打开并明确提示另一个实例/窗口正在编辑。
+- **Alpha.5 现状（D-032）**：工作区级 `.meowo.lock` 使用非阻塞 `flock`，第二个实例直接拒绝打开；尚未实现只读打开/另存副本。该偏差必须在 1.0 前修正或在发布说明中明确降级。
 
 ---
 

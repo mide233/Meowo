@@ -6,9 +6,14 @@
 #include <nlohmann/json.hpp>
 #include <sqlite3.h>
 
+#include <fcntl.h>
+#include <sys/file.h>
+#include <unistd.h>
+
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cerrno>
 #include <chrono>
 #include <cmath>
 #include <cctype>
@@ -551,6 +556,7 @@ class Workspace {
     ensure_dir(root_);
     ensure_dir(root_ / "documents");
     ensure_dir(root_ / "cache");
+    acquire_lock();
     init_workspace_db(db_);
   }
 
@@ -1176,7 +1182,33 @@ class Workspace {
     return result;
   }
 
+  struct FileLock {
+    int fd = -1;
+    ~FileLock() {
+      if (fd >= 0) {
+        ::flock(fd, LOCK_UN);
+        ::close(fd);
+      }
+    }
+  };
+
+  void acquire_lock() {
+    const fs::path path = root_ / ".meowo.lock";
+    lock_.fd = ::open(path.string().c_str(), O_RDWR | O_CREAT | O_CLOEXEC, 0644);
+    if (lock_.fd < 0) {
+      throw CoreError("无法创建资料库锁文件: " + path.string() + " (" +
+                      std::strerror(errno) + ")");
+    }
+    if (::flock(lock_.fd, LOCK_EX | LOCK_NB) != 0) {
+      const int error = errno;
+      ::close(lock_.fd);
+      lock_.fd = -1;
+      throw CoreError("资料库已被另一个 Meowo 实例打开: " + std::string(std::strerror(error)));
+    }
+  }
+
   fs::path root_;
+  FileLock lock_;
   Database db_;
 };
 

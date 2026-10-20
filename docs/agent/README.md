@@ -2,7 +2,7 @@
 
 > 本目录是所有 AI Agent 与协作者阅读、维护的项目事实来源（Single Source of Truth）。
 > 当前基线版本：`v1.0-baseline.1`（2026-10-20）  
-> 当前状态：负责人已完成 Q-001–Q-162 访谈；1.0 合并基线已冻结；**Alpha.4 已构建（Linux release + Android arm64 APK）**，PDF/EPUB 统一使用 MuPDF，Android 与桌面共用导入链路。交付、证据与缺口见 [alpha.4 报告](reports/2026-10-20-alpha4-mupdf.md)。
+> 当前状态：负责人已完成 Q-001–Q-162 访谈；1.0 合并基线已冻结；**Alpha.5 已构建（Linux release + Android arm64 APK）**，PDF/EPUB 统一使用 MuPDF，Android 与桌面共用导入链路；工作区已加入 Posix `flock` 独占锁。交付、证据与缺口见 [alpha.5 报告](reports/2026-10-20-alpha5-workspace-lock.md)。
 
 ---
 

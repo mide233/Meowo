@@ -179,3 +179,25 @@ TEST(Core, ExportsDocumentCopy) {
              {"targetPath", target.string()}});
   EXPECT_TRUE(fs::exists(target));
 }
+
+TEST(Core, RejectsConcurrentWorkspaceOpen) {
+  TempDir temp;
+  char* error = nullptr;
+  const uint64_t first = meowo_workspace_open(temp.path.string().c_str(), &error);
+  ASSERT_NE(first, 0u);
+  meowo_free(error);
+  error = nullptr;
+
+  const uint64_t second = meowo_workspace_open(temp.path.string().c_str(), &error);
+  EXPECT_EQ(second, 0u);
+  ASSERT_NE(error, nullptr);
+  EXPECT_NE(std::string(error).find("另一个"), std::string::npos);
+  meowo_free(error);
+  error = nullptr;
+
+  meowo_workspace_close(first);
+  const uint64_t third = meowo_workspace_open(temp.path.string().c_str(), &error);
+  EXPECT_NE(third, 0u);
+  meowo_free(error);
+  if (third) meowo_workspace_close(third);
+}
