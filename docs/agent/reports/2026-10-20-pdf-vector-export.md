@@ -116,6 +116,6 @@ scripts/build_android_apk.sh
 
 验证（本机临时 MuPDF 1.27 运行库；仓库内 Android 1.26.3 静态库需在完整构建环境复验）：
 
-- CTest：20/20 通过（新增方向、笔记页、回退位图、probe 测试）。
+- CTest：22/22 通过（新增方向、笔记页、回退位图、probe 测试）。
 - Flutter/Dart：95/95 通过；`flutter analyze` 无问题。
 - 尚未重新生成 Linux release / Android arm64 APK；当前工具链中的 `.tools/mupdf` 源文件不完整，需恢复完整 MuPDF 构建后再产出二进制。
