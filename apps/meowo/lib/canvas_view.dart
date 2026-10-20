@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
 import 'ink_ops.dart';
@@ -28,6 +29,7 @@ class CanvasView extends StatefulWidget {
     required this.onSelectionMove,
     required this.onSelectionScale,
     required this.onSelectionGestureEnd,
+    this.viewResetToken = 0,
   });
 
   final Map<String, dynamic> document;
@@ -54,6 +56,7 @@ class CanvasView extends StatefulWidget {
   final void Function(Offset delta) onSelectionMove;
   final void Function(Rect bounds) onSelectionScale;
   final VoidCallback onSelectionGestureEnd;
+  final int viewResetToken;
 
   @override
   State<CanvasView> createState() => _CanvasViewState();
@@ -72,6 +75,35 @@ class _CanvasViewState extends State<CanvasView> {
   Rect? _scaleStartBounds;
   double _lastScale = 1.0;
 
+  double _zoom = 1.0;
+  Offset _offset = Offset.zero;
+  double _fitScale = 1.0;
+  bool _needsFit = true;
+  String? _fittedPageId;
+  bool _panning = false;
+  Offset? _panLast;
+  final _touches = <int, Offset>{};
+  bool _viewGesture = false;
+  double _baseZoom = 1.0;
+  Offset _baseOffset = Offset.zero;
+  Offset _baseCenter = Offset.zero;
+  double _baseDistance = 1.0;
+
+  @override
+  void didUpdateWidget(covariant CanvasView oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.page['id'] != widget.page['id'] ||
+        oldWidget.viewResetToken != widget.viewResetToken) {
+      _zoom = 1.0;
+      _offset = Offset.zero;
+      _needsFit = true;
+      _fittedPageId = null;
+      _panning = false;
+      _viewGesture = false;
+      _touches.clear();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final page = widget.page;
@@ -86,58 +118,88 @@ class _CanvasViewState extends State<CanvasView> {
     return LayoutBuilder(
       builder: (context, constraints) {
         const margin = 36.0;
-        final scale = math
+        final viewport = Size(constraints.maxWidth, constraints.maxHeight);
+        final fitScale = math
             .min(
-              (constraints.maxWidth - margin * 2) / width,
-              (constraints.maxHeight - margin * 2) / height,
+              (viewport.width - margin * 2) / width,
+              (viewport.height - margin * 2) / height,
             )
             .clamp(0.05, 4.0);
+        _fitScale = fitScale;
+        final pageId = page['id'] as String?;
+        if (_needsFit || _fittedPageId != pageId) {
+          _zoom = 1.0;
+          final fitted = Size(width * fitScale, height * fitScale);
+          _offset = Offset(
+            (viewport.width - fitted.width) / 2,
+            (viewport.height - fitted.height) / 2,
+          );
+          _needsFit = false;
+          _fittedPageId = pageId;
+        }
+        final scale = fitScale * _zoom;
         _lastScale = scale;
         final canvasSize = Size(width * scale, height * scale);
-        return Center(
-          child: DecoratedBox(
-            decoration: BoxDecoration(
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.12),
-                  blurRadius: 24,
-                  offset: const Offset(0, 8),
-                ),
-              ],
-            ),
-            child: SizedBox(
-              width: canvasSize.width,
-              height: canvasSize.height,
-              child: MouseRegion(
-                cursor: SystemMouseCursors.precise,
-                child: Listener(
-                  behavior: HitTestBehavior.opaque,
-                  onPointerDown: (event) => _onDown(event, scale),
-                  onPointerMove: (event) => _onMove(event, scale),
-                  onPointerUp: (event) => _onUp(event, scale),
-                  onPointerCancel: (event) => _cancel(),
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTapUp: widget.tool == 'select' ? _onTapUp : null,
-                    child: CustomPaint(
-                      size: canvasSize,
-                      painter: MeowoCanvasPainter(
-                        document: widget.document,
-                        page: widget.page,
-                        scale: scale,
-                        images: widget.images,
-                        inProgress: _points,
-                        inProgressPressures: _pressures,
-                        inProgressColor: widget.color,
-                        inProgressWidth: widget.width,
-                        inProgressHighlighter: widget.tool == 'highlighter',
-                        selectedIds: widget.selectionIds,
-                        selectionBounds: widget.selectionBounds,
-                        lassoPoints: _lasso,
-                        lassoRect: widget.lassoRect,
+        return SizedBox(
+          width: viewport.width,
+          height: viewport.height,
+          child: ClipRect(
+            child: MouseRegion(
+              cursor: widget.tool == 'hand'
+                  ? SystemMouseCursors.grab
+                  : SystemMouseCursors.precise,
+              child: Listener(
+                behavior: HitTestBehavior.opaque,
+                onPointerSignal: _onPointerSignal,
+                onPointerDown: _onDown,
+                onPointerMove: _onMove,
+                onPointerUp: _onUp,
+                onPointerCancel: (event) => _cancel(event.pointer),
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  children: [
+                    Positioned(
+                      left: _offset.dx,
+                      top: _offset.dy,
+                      width: canvasSize.width,
+                      height: canvasSize.height,
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          boxShadow: [
+                            BoxShadow(
+                              color: Colors.black.withValues(alpha: 0.12),
+                              blurRadius: 24,
+                              offset: const Offset(0, 8),
+                            ),
+                          ],
+                        ),
+                        child: GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTapUp: widget.tool == 'select' ? _onTapUp : null,
+                          child: CustomPaint(
+                            key: const ValueKey('meowo-canvas'),
+                            size: canvasSize,
+                            painter: MeowoCanvasPainter(
+                              document: widget.document,
+                              page: widget.page,
+                              scale: scale,
+                              images: widget.images,
+                              inProgress: _points,
+                              inProgressPressures: _pressures,
+                              inProgressColor: widget.color,
+                              inProgressWidth: widget.width,
+                              inProgressHighlighter:
+                                  widget.tool == 'highlighter',
+                              selectedIds: widget.selectionIds,
+                              selectionBounds: widget.selectionBounds,
+                              lassoPoints: _lasso,
+                              lassoRect: widget.lassoRect,
+                            ),
+                          ),
+                        ),
                       ),
                     ),
-                  ),
+                  ],
                 ),
               ),
             ),
@@ -147,10 +209,39 @@ class _CanvasViewState extends State<CanvasView> {
     );
   }
 
-  Offset _toPage(Offset local, double scale) => local / scale;
+  Offset _toPage(Offset local) => (local - _offset) / _lastScale;
 
-  void _onDown(PointerDownEvent event, double scale) {
-    final point = _toPage(event.localPosition, scale);
+  void _onPointerSignal(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    final factor = math.exp(-event.scrollDelta.dy / 420);
+    _zoomAt(event.localPosition, factor);
+  }
+
+  void _zoomAt(Offset focus, double factor) {
+    final oldScale = _fitScale * _zoom;
+    if (oldScale <= 0) return;
+    final pagePoint = (focus - _offset) / oldScale;
+    final newZoom = (_zoom * factor).clamp(0.25, 8.0);
+    setState(() {
+      _zoom = newZoom;
+      _offset = focus - pagePoint * (_fitScale * _zoom);
+    });
+  }
+
+  void _onDown(PointerDownEvent event) {
+    if (event.kind == PointerDeviceKind.touch) {
+      _touches[event.pointer] = event.localPosition;
+      if (_touches.length >= 2) {
+        _startViewGesture();
+        return;
+      }
+    }
+    if (widget.tool == 'hand') {
+      setState(() => _panning = true);
+      _panLast = event.localPosition;
+      return;
+    }
+    final point = _toPage(event.localPosition);
     if (widget.tool == 'select') {
       _selectDown(point);
       return;
@@ -173,10 +264,25 @@ class _CanvasViewState extends State<CanvasView> {
     });
   }
 
-  void _onMove(PointerMoveEvent event, double scale) {
-    final point = _toPage(event.localPosition, scale);
+  void _onMove(PointerMoveEvent event) {
+    if (_viewGesture) {
+      if (_touches.containsKey(event.pointer)) {
+        _touches[event.pointer] = event.localPosition;
+        _updateViewGesture();
+      }
+      return;
+    }
+    if (_panning) {
+      final last = _panLast;
+      if (last != null) {
+        setState(() => _offset += event.localPosition - last);
+      }
+      _panLast = event.localPosition;
+      return;
+    }
+    final point = _toPage(event.localPosition);
     if (widget.tool == 'select') {
-      _selectMove(point, scale);
+      _selectMove(point, _lastScale);
       return;
     }
     if (widget.tool == 'eraser') {
@@ -193,10 +299,23 @@ class _CanvasViewState extends State<CanvasView> {
     });
   }
 
-  void _onUp(PointerUpEvent event, double scale) {
-    final point = _toPage(event.localPosition, scale);
+  void _onUp(PointerUpEvent event) {
+    _touches.remove(event.pointer);
+    if (_viewGesture) {
+      if (_touches.length < 2) {
+        _viewGesture = false;
+        _touches.clear();
+      }
+      return;
+    }
+    if (_panning) {
+      setState(() => _panning = false);
+      _panLast = null;
+      return;
+    }
+    final point = _toPage(event.localPosition);
     if (widget.tool == 'select') {
-      _selectUp(point, scale);
+      _selectUp(point, _lastScale);
       return;
     }
     if (widget.tool == 'eraser') {
@@ -214,6 +333,48 @@ class _CanvasViewState extends State<CanvasView> {
     });
     if (points.isNotEmpty) {
       widget.onStroke(points, pressures, widget.tool == 'highlighter');
+    }
+  }
+
+  void _startViewGesture() {
+    _cancelActiveGesture();
+    final points = _touches.values.take(2).toList();
+    if (points.length < 2) return;
+    _baseZoom = _zoom;
+    _baseOffset = _offset;
+    _baseCenter = (points[0] + points[1]) / 2;
+    _baseDistance = math.max(1.0, (points[0] - points[1]).distance);
+    _viewGesture = true;
+    _panning = false;
+  }
+
+  void _updateViewGesture() {
+    final points = _touches.values.take(2).toList();
+    if (points.length < 2) return;
+    final center = (points[0] + points[1]) / 2;
+    final distance = math.max(1.0, (points[0] - points[1]).distance);
+    final nextZoom = (_baseZoom * distance / _baseDistance).clamp(0.25, 8.0);
+    final pagePoint = (_baseCenter - _baseOffset) / (_fitScale * _baseZoom);
+    setState(() {
+      _zoom = nextZoom;
+      _offset = center - pagePoint * (_fitScale * _zoom);
+    });
+  }
+
+  void _cancelActiveGesture() {
+    if (_drawing) {
+      setState(() {
+        _drawing = false;
+        _points.clear();
+        _pressures.clear();
+      });
+    }
+    if (widget.tool == 'eraser' && _eraseLast != null) {
+      _eraseLast = null;
+      widget.onEraseEnd();
+    }
+    if (_selecting) {
+      _resetSelectionGesture();
     }
   }
 
@@ -372,7 +533,20 @@ class _CanvasViewState extends State<CanvasView> {
     );
   }
 
-  void _cancel() {
+  void _cancel(int pointer) {
+    _touches.remove(pointer);
+    if (_viewGesture) {
+      if (_touches.length < 2) {
+        _viewGesture = false;
+        _touches.clear();
+      }
+      return;
+    }
+    if (_panning) {
+      setState(() => _panning = false);
+      _panLast = null;
+      return;
+    }
     if (widget.tool == 'eraser') {
       _eraseLast = null;
       widget.onEraseEnd();

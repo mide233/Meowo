@@ -7,6 +7,7 @@ import 'package:path_provider/path_provider.dart';
 import 'package:flutter/foundation.dart';
 
 import 'core/meowo_core.dart';
+import 'pdf_android.dart';
 
 enum LibraryFilter { all, favorites, trash }
 
@@ -111,9 +112,42 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> importPdf(String path) async {
+    if (Platform.isAndroid) {
+      final temp = await getTemporaryDirectory();
+      final stamp = DateTime.now().microsecondsSinceEpoch;
+      final output = Directory('${temp.path}/meowo-pdf-$stamp');
+      try {
+        final pages = await PdfAndroidRenderer.render(
+          path: path,
+          outputDir: output.path,
+        );
+        if (pages.isEmpty) {
+          throw MeowoException('PDF 没有可渲染页面');
+        }
+        final result = core.call('import_pdf_pages', {
+          'title': _titleFromPath(path, 'PDF'),
+          'pages': pages,
+        });
+        await refresh();
+        await openDocument(result['id'] as String);
+      } finally {
+        if (await output.exists()) {
+          await output.delete(recursive: true);
+        }
+      }
+      return;
+    }
     final result = core.call('import_pdf', {'sourcePath': path});
     await refresh();
     await openDocument(result['id'] as String);
+  }
+
+  String _titleFromPath(String path, String fallback) {
+    final segments = File(path).uri.pathSegments;
+    if (segments.isEmpty) return fallback;
+    final name = segments.last;
+    final dot = name.lastIndexOf('.');
+    return dot > 0 ? name.substring(0, dot) : name;
   }
 
   Future<void> importEpub(String path) async {

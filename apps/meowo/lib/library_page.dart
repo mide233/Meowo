@@ -154,12 +154,11 @@ class _LibraryPageState extends State<LibraryPage> {
                     icon: const Icon(Icons.open_with),
                     label: const Text('新建无极'),
                   ),
-                  if (!Platform.isAndroid)
-                    OutlinedButton.icon(
-                      onPressed: () => _guard(_importPdf),
-                      icon: const Icon(Icons.picture_as_pdf_outlined),
-                      label: const Text('导入 PDF'),
-                    ),
+                  OutlinedButton.icon(
+                    onPressed: () => _guard(_importPdf),
+                    icon: const Icon(Icons.picture_as_pdf_outlined),
+                    label: const Text('导入 PDF'),
+                  ),
                   if (!Platform.isAndroid)
                     OutlinedButton.icon(
                       onPressed: () => _guard(_importEpub),

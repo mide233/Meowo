@@ -1,3 +1,4 @@
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
@@ -21,6 +22,29 @@ void main() {
     expect((list['items'] as List).length, 1);
     final opened = core.call('open_document', {'id': doc['id']});
     expect((opened['pages'] as List).length, 1);
+  });
+
+  test('pre-rendered PDF pages create a book', () async {
+    final root = Directory.systemTemp.createTempSync('meowo-pages-test-');
+    final core = await MeowoCore.open(root.path);
+    addTearDown(core.close);
+    addTearDown(() => root.deleteSync(recursive: true));
+    final png = File('${root.path}/page-1.png');
+    png.writeAsBytesSync(
+      base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Zl1sAAAAASUVORK5CYII=',
+      ),
+    );
+    final doc = core.call('import_pdf_pages', {
+      'title': 'Android PDF',
+      'pages': [
+        {'path': png.path, 'width': 300, 'height': 400},
+      ],
+    });
+    expect(doc['pages'], 1);
+    final opened = core.call('open_document', {'id': doc['id']});
+    expect(opened['kind'], 'book');
+    expect((opened['pages'] as List).first['sourceAssetId'], isNotEmpty);
   });
 
   test('PDF import creates a fixed-page book', () async {

@@ -47,6 +47,7 @@ class _EditorPageState extends State<EditorPage> {
   bool _eraseChanged = false;
 
   String _tool = 'pen';
+  int _viewResetToken = 0;
   Color _color = const Color(0xFF2B2A27);
   double _width = 2.5;
   int _pageIndex = 0;
@@ -1173,6 +1174,7 @@ class _EditorPageState extends State<EditorPage> {
                       selectionIds: _selectedIds,
                       selectionBounds: _selectionBounds,
                       lassoRect: _lassoRect,
+                      viewResetToken: _viewResetToken,
                       onStroke: _addStroke,
                       onErase: _eraseAt,
                       onEraseStart: _eraseBegin,
@@ -1422,6 +1424,7 @@ class _EditorPageState extends State<EditorPage> {
     final scheme = Theme.of(context).colorScheme;
     final tools = <(String, IconData, String)>[
       ('select', Icons.near_me_outlined, '选择'),
+      ('hand', Icons.pan_tool_outlined, '移动'),
       ('pen', Icons.edit_outlined, '笔'),
       ('highlighter', Icons.brush_outlined, '荧光笔'),
       ('eraser', Icons.auto_fix_normal, '橡皮'),
@@ -1498,8 +1501,8 @@ class _EditorPageState extends State<EditorPage> {
               ),
             ),
             IconButton(
-              tooltip: '重置视图',
-              onPressed: () => setState(() {}),
+              tooltip: '适应页面',
+              onPressed: () => setState(() => _viewResetToken++),
               icon: const Icon(Icons.fit_screen_outlined),
             ),
           ],

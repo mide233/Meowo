@@ -620,6 +620,7 @@ class Workspace {
     if (op == "get_asset") return get_asset(request);
     if (op == "import_markdown") return import_markdown(request);
     if (op == "import_pdf") return import_pdf(request);
+    if (op == "import_pdf_pages") return import_pdf_pages(request);
     if (op == "export_document") return export_document(request);
     if (op == "statistics") return statistics();
     throw CoreError("未知操作: " + op);
@@ -1076,6 +1077,68 @@ class Workspace {
     tx.commit();
     std::error_code ec;
     fs::remove_all(temp, ec);
+    return json{{"id", id}, {"title", title}, {"pages", doc["pages"].size()}};
+  }
+
+  json import_pdf_pages(const json& request) {
+    if (!request.contains("pages") || !request["pages"].is_array()) {
+      throw CoreError("缺少页面列表");
+    }
+    const auto& pages = request["pages"];
+    if (pages.empty()) throw CoreError("PDF 没有可导入页面");
+    if (pages.size() > 500) throw CoreError("首版单次最多导入 500 页 PDF");
+    const std::string title = request.value("title", "PDF");
+    const std::string id = new_id("doc");
+    json doc = make_document(id, title, "book", Paper{"A4", 595.276, 841.89, "blank"});
+    doc["pages"] = json::array();
+    doc["assets"] = json::array();
+    std::vector<std::pair<std::string, std::pair<std::string, std::string>>> assets;
+    double paper_width = 0;
+    double paper_height = 0;
+    for (size_t i = 0; i < pages.size(); ++i) {
+      const auto& item = pages[i];
+      const std::string path = item.value("path", "");
+      if (path.empty() || !fs::exists(path)) {
+        throw CoreError("PDF 页面图片不存在: " + path);
+      }
+      const auto [pixel_w, pixel_h] = png_size(path);
+      double width = item.value("width", 0.0);
+      double height = item.value("height", 0.0);
+      if (width <= 0 || height <= 0) {
+        width = pixel_w * 72.0 / 120.0;
+        height = pixel_h * 72.0 / 120.0;
+      }
+      const std::string bytes = read_file(path);
+      if (bytes.size() > kMaxAssetBytes) {
+        throw CoreError("PDF 页面图片超过 512 MiB");
+      }
+      if (i == 0) {
+        paper_width = width;
+        paper_height = height;
+      }
+      const std::string asset_id = new_id("asset");
+      assets.push_back({asset_id, {fs::path(path).filename().string(), bytes}});
+      json page = page_json(width, height);
+      page["isNotePage"] = false;
+      page["sourceIndex"] = static_cast<int>(i);
+      page["sourceAssetId"] = asset_id;
+      doc["pages"].push_back(page);
+      doc["assets"].push_back(json{{"id", asset_id},
+                                   {"name", "第 " + std::to_string(i + 1) + " 页"},
+                                   {"mime", "image/png"},
+                                   {"size", bytes.size()},
+                                   {"kind", "book_page"}});
+    }
+    doc["paper"]["width"] = paper_width;
+    doc["paper"]["height"] = paper_height;
+    const fs::path target = document_path(root_, id);
+    save_document_payload(target, doc);
+    for (const auto& [asset_id, payload] : assets) {
+      save_asset(target, asset_id, payload.first, "image/png", payload.second);
+    }
+    Transaction tx(db_);
+    insert_catalog(doc);
+    tx.commit();
     return json{{"id", id}, {"title", title}, {"pages", doc["pages"].size()}};
   }
 

@@ -1,5 +1,6 @@
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:meowo/canvas_view.dart';
@@ -34,6 +35,7 @@ void main() {
     required Set<String> selectionIds,
     required Rect? selectionBounds,
     required bool lassoRect,
+    String tool = 'select',
     void Function(List<Offset>, bool)? onSelection,
     void Function(Offset)? onMove,
     void Function(Rect)? onScale,
@@ -46,7 +48,7 @@ void main() {
           body: CanvasView(
             document: document(),
             page: page(),
-            tool: 'select',
+            tool: tool,
             color: Colors.black,
             width: 2,
             activeLayerId: 'layer_1',
@@ -126,9 +128,7 @@ void main() {
     expect(delta!.dy, closeTo(35, 1.5));
   });
 
-  testWidgets('dragging a corner handle reports scaled bounds', (
-    tester,
-  ) async {
+  testWidgets('dragging a corner handle reports scaled bounds', (tester) async {
     Rect? scaled;
     final toGlobal = await pumpCanvas(
       tester,
@@ -146,5 +146,40 @@ void main() {
     expect(scaled!.top, closeTo(40, 1.5));
     expect(scaled!.right, closeTo(250, 1.5));
     expect(scaled!.bottom, closeTo(220, 1.5));
+  });
+
+  testWidgets('hand tool pans the viewport', (tester) async {
+    await pumpCanvas(
+      tester,
+      selectionIds: const {},
+      selectionBounds: null,
+      lassoRect: false,
+      tool: 'hand',
+    );
+    final canvas = find.byKey(const ValueKey('meowo-canvas'));
+    final before = tester.getTopLeft(canvas);
+    await tester.dragFrom(const Offset(400, 400), const Offset(55, 35));
+    await tester.pumpAndSettle();
+    final after = tester.getTopLeft(canvas);
+    expect(after.dx - before.dx, closeTo(55, 1.5));
+    expect(after.dy - before.dy, closeTo(35, 1.5));
+  });
+
+  testWidgets('mouse wheel zooms the canvas', (tester) async {
+    await pumpCanvas(
+      tester,
+      selectionIds: const {},
+      selectionBounds: null,
+      lassoRect: false,
+    );
+    final canvas = find.byKey(const ValueKey('meowo-canvas'));
+    final before = tester.getSize(canvas);
+    final center = tester.getCenter(canvas);
+    await tester.sendEventToBinding(
+      PointerScrollEvent(position: center, scrollDelta: const Offset(0, -120)),
+    );
+    await tester.pumpAndSettle();
+    final after = tester.getSize(canvas);
+    expect(after.width, greaterThan(before.width));
   });
 }
