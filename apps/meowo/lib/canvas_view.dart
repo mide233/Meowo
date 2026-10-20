@@ -74,6 +74,13 @@ const double kInfiniteMaxZoom = 8.0;
 const double kPagedMinZoom = 1.0;
 const double kPagedMaxZoom = 8.0;
 const double kPagedPageMargin = 36.0;
+
+/// Zoom level where paged zoom-out begins easing the page back to center.
+///
+/// Above this level wheel/pinch zoom keeps the normal focus-point behavior.
+/// Between this level and [kPagedMinZoom] the offset is blended toward the
+/// centered fit position, reaching it exactly at the minimum zoom.
+const double kPagedCenterPullStartZoom = 1.5;
 const Offset kInfiniteOriginScreen = Offset(64, 64);
 
 Size pagedPageSize(Map<String, dynamic> document, Map<String, dynamic> page) {
@@ -109,6 +116,30 @@ Rect pagedPageRect(Size viewport, Size pageSize) {
   );
 }
 
+/// Top-left screen offset that centers a page of [pageSize] at [scale].
+///
+/// At [pagedFitScale] this is the fixed fit-to-screen position used when a
+/// paged/book document is opened. The caller supplies the current viewport
+/// and page size so the result stays correct across layout changes.
+Offset pagedCenteredOffset(Size viewport, Size pageSize, double scale) {
+  return Offset(
+    (viewport.width - pageSize.width * scale) / 2,
+    (viewport.height - pageSize.height * scale) / 2,
+  );
+}
+
+/// Progress of the paged zoom-out pull toward the centered fit position.
+///
+/// Returns 0 at or above [kPagedCenterPullStartZoom] and 1 at
+/// [kPagedMinZoom], so repeated zoom-out steps ease the page back instead of
+/// snapping it only on the final frame.
+double pagedCenterPull(double zoom) {
+  if (zoom >= kPagedCenterPullStartZoom) return 0;
+  if (zoom <= kPagedMinZoom) return 1;
+  return (kPagedCenterPullStartZoom - zoom) /
+      (kPagedCenterPullStartZoom - kPagedMinZoom);
+}
+
 class CanvasViewState extends State<CanvasView> {
   final List<Offset> _points = [];
   final List<Offset> _lasso = [];
@@ -137,6 +168,7 @@ class CanvasViewState extends State<CanvasView> {
   Offset _baseOffset = Offset.zero;
   Offset _baseCenter = Offset.zero;
   double _baseDistance = 1.0;
+  bool? _pinchZoomingOut;
 
   Size _viewportSize = Size.zero;
   Size _pageSize = Size.zero;
@@ -285,11 +317,7 @@ class CanvasViewState extends State<CanvasView> {
         _fitScale = fitScale;
         if (_needsFit || _fittedPageId != pageId) {
           _zoom = 1.0;
-          final fitted = Size(width * fitScale, height * fitScale);
-          _offset = Offset(
-            (viewport.width - fitted.width) / 2,
-            (viewport.height - fitted.height) / 2,
-          );
+          _offset = pagedCenteredOffset(viewport, pageSize, fitScale);
           _needsFit = false;
           _fittedPageId = pageId;
         }
@@ -442,17 +470,42 @@ class CanvasViewState extends State<CanvasView> {
     _zoomAt(event.localPosition, factor);
   }
 
+  Offset _pagedCenterAt(double scale) {
+    if (_viewportSize.isEmpty || _pageSize.isEmpty) return _offset;
+    return pagedCenteredOffset(_viewportSize, _pageSize, scale);
+  }
+
+  /// Pulls a focus-based paged offset toward the centered fit position.
+  ///
+  /// Only called while zooming out; zoom-in keeps the normal focus-point
+  /// behavior. At [kPagedMinZoom] the centered offset is returned exactly.
+  Offset _pagedOffsetForZoomOut(Offset focusOffset, double zoom) {
+    if (_isInfinite || _viewportSize.isEmpty || _pageSize.isEmpty) {
+      return focusOffset;
+    }
+    final pull = pagedCenterPull(zoom);
+    if (pull <= 0) return focusOffset;
+    final centered = _pagedCenterAt(_fitScale * zoom);
+    if (pull >= 1) return centered;
+    return Offset.lerp(focusOffset, centered, pull)!;
+  }
+
   void _zoomAt(Offset focus, double factor) {
     final oldScale = _fitScale * _zoom;
     if (oldScale <= 0) return;
     final pagePoint = (focus - _offset) / oldScale;
+    final zoomingOut = factor < 1.0;
     final newZoom = _isInfinite
         ? (_zoom * factor).clamp(kInfiniteMinZoom, kInfiniteMaxZoom)
         : (_zoom * factor).clamp(kPagedMinZoom, kPagedMaxZoom);
     setState(() {
       _zoom = newZoom;
       final nextScale = _fitScale * _zoom;
-      _offset = focus - pagePoint * nextScale;
+      var nextOffset = focus - pagePoint * nextScale;
+      if (zoomingOut) {
+        nextOffset = _pagedOffsetForZoomOut(nextOffset, newZoom);
+      }
+      _offset = nextOffset;
       if (_isInfinite) {
         _lastScale = nextScale;
         _offset = _clampInfiniteOffset(_offset, nextScale);
@@ -648,6 +701,7 @@ class CanvasViewState extends State<CanvasView> {
     _baseCenter = (points[0] + points[1]) / 2;
     _baseDistance = math.max(1.0, (points[0] - points[1]).distance);
     _viewGesture = true;
+    _pinchZoomingOut = null;
     _panning = false;
   }
 
@@ -656,7 +710,7 @@ class CanvasViewState extends State<CanvasView> {
     if (points.length < 2) return;
     final center = (points[0] + points[1]) / 2;
     final distance = math.max(1.0, (points[0] - points[1]).distance);
-    final nextZoom = _isInfinite
+    var nextZoom = _isInfinite
         ? (_baseZoom * distance / _baseDistance).clamp(
             kInfiniteMinZoom,
             kInfiniteMaxZoom,
@@ -665,11 +719,31 @@ class CanvasViewState extends State<CanvasView> {
             kPagedMinZoom,
             kPagedMaxZoom,
           );
+    final intendedZoomOut = nextZoom < _zoom;
+    var zoomingOut = intendedZoomOut;
+    if (!_isInfinite &&
+        _pinchZoomingOut != null &&
+        intendedZoomOut != _pinchZoomingOut) {
+      // The fingers reversed direction. Rebase onto the current camera so the
+      // focus-based zoom-in path starts from where the eased zoom-out ended
+      // instead of jumping back to the gesture's original offset.
+      _baseZoom = _zoom;
+      _baseOffset = _offset;
+      _baseCenter = center;
+      _baseDistance = distance;
+      nextZoom = _zoom;
+      zoomingOut = false;
+    }
+    _pinchZoomingOut = intendedZoomOut;
     final pagePoint = (_baseCenter - _baseOffset) / (_fitScale * _baseZoom);
     setState(() {
       _zoom = nextZoom;
       final nextScale = _fitScale * _zoom;
-      _offset = center - pagePoint * nextScale;
+      var nextOffset = center - pagePoint * nextScale;
+      if (zoomingOut) {
+        nextOffset = _pagedOffsetForZoomOut(nextOffset, nextZoom);
+      }
+      _offset = nextOffset;
       if (_isInfinite) {
         _lastScale = nextScale;
         _offset = _clampInfiniteOffset(_offset, nextScale);
