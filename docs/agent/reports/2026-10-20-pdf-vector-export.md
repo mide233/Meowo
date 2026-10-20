@@ -119,4 +119,5 @@ scripts/build_android_apk.sh
 - CTest：22/22 通过（新增方向、笔记页、回退位图、probe 测试）。
 - Flutter/Dart：95/95 通过；`flutter analyze` 无问题。
 - Linux release 已重新构建；6 秒冒烟启动正常（超时退出，无崩溃）。
+- 修复 Linux bundle 动态库加载：`scripts/package_linux_bundle.sh` 会把 MuPDF/gumbo/mujs 运行库放入 `bundle/lib`，并把启动器改为设置 `LD_LIBRARY_PATH` 的包装脚本；`build_linux_app.sh` 已自动调用。
 - Android arm64 APK 未重新生成：当前 `.tools/mupdf` 的 1.26.3 源文件/arm64 静态库不完整；本次只能用临时 MuPDF 1.27 Linux 运行库验证。需恢复完整 MuPDF 1.26.3 arm64 构建后再产出 APK。
