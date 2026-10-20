@@ -53,6 +53,8 @@ class _EditorPageState extends State<EditorPage> {
   Color _color = const Color(0xFF2B2A27);
   double _width = 2.5;
   int _pageIndex = 0;
+  int _pageSlideDirection = 1;
+  final _retainedImageIds = <String>{};
   String? _activeLayerId;
   String? _loadedDocId;
   bool _loading = true;
@@ -168,6 +170,8 @@ class _EditorPageState extends State<EditorPage> {
       if (!mounted) return;
       _loadedDocId = id;
       _pageIndex = 0;
+      _pageSlideDirection = 1;
+      _retainedImageIds.clear();
       _undo.clear();
       _redo.clear();
       _selectedIds.clear();
@@ -207,6 +211,7 @@ class _EditorPageState extends State<EditorPage> {
       }
     }
     final old = Map<String, ui.Image>.from(_images);
+    final keep = <String>{...ids, ..._retainedImageIds};
     for (final id in ids) {
       if (old.containsKey(id)) continue;
       try {
@@ -219,11 +224,14 @@ class _EditorPageState extends State<EditorPage> {
       }
     }
     for (final entry in old.entries) {
-      if (!ids.contains(entry.key)) {
+      if (!keep.contains(entry.key)) {
         entry.value.dispose();
         _images.remove(entry.key);
       }
     }
+    _retainedImageIds
+      ..clear()
+      ..addAll(ids);
     if (mounted) setState(() {});
   }
 
@@ -344,8 +352,11 @@ class _EditorPageState extends State<EditorPage> {
 
   Future<void> _setPage(int index) async {
     if (index < 0 || index >= (_doc!['pages'] as List).length) return;
+    if (index == _pageIndex) return;
     await _flushSave();
+    if (!mounted) return;
     setState(() {
+      _pageSlideDirection = index > _pageIndex ? 1 : -1;
       _pageIndex = index;
       _selectedIds.clear();
       _transformOriginals.clear();
@@ -353,6 +364,13 @@ class _EditorPageState extends State<EditorPage> {
       _activeLayerId = _layers.isEmpty ? null : _layers.first['id'] as String?;
     });
     await _loadPageImages();
+  }
+
+  void _swipePage(int direction) {
+    if (_doc == null || _doc!['kind'] == 'infinite') return;
+    final target = _pageIndex + direction;
+    if (target < 0 || target >= (_doc!['pages'] as List).length) return;
+    unawaited(_setPage(target));
   }
 
   void _addStroke(
@@ -1237,6 +1255,7 @@ class _EditorPageState extends State<EditorPage> {
     final media = MediaQuery.sizeOf(context);
     final wide = media.width >= 1040;
     final compact = media.width < 760;
+    final isInfinite = _doc!['kind'] == 'infinite';
     return Column(
       children: [
         _topBar(context, wide, compact),
@@ -1249,31 +1268,36 @@ class _EditorPageState extends State<EditorPage> {
                   color: Theme.of(context).colorScheme.surfaceContainerLowest,
                   child: RepaintBoundary(
                     key: _canvasKey,
-                    child: CanvasView(
-                      document: _doc!,
-                      page: _page,
-                      tool: _tool,
-                      color: _color,
-                      width: _width,
-                      activeLayerId: _activeLayerId ?? '',
-                      images: _images,
-                      selectionIds: _selectedIds,
-                      selectionBounds: _selectionBounds,
-                      lassoRect: _lassoRect,
-                      viewResetToken: _viewResetToken,
-                      onStroke: _addStroke,
-                      onErase: _eraseAt,
-                      onEraseStart: _eraseBegin,
-                      onEraseEnd: _eraseEnd,
-                      onElementTap: (element) {
-                        _tool = 'select';
-                        setState(() {});
-                        _onElementTap(element);
-                      },
-                      onSelection: _onSelection,
-                      onSelectionMove: _applySelectionMove,
-                      onSelectionScale: _applySelectionScale,
-                      onSelectionGestureEnd: _endSelectionTransform,
+                    child: _PageSlideTransition(
+                      pageKey: _page['id'] as String? ?? _pageIndex,
+                      direction: _pageSlideDirection,
+                      child: CanvasView(
+                        document: _doc!,
+                        page: _page,
+                        tool: _tool,
+                        color: _color,
+                        width: _width,
+                        activeLayerId: _activeLayerId ?? '',
+                        images: _images,
+                        selectionIds: _selectedIds,
+                        selectionBounds: _selectionBounds,
+                        lassoRect: _lassoRect,
+                        viewResetToken: _viewResetToken,
+                        onPageSwipe: isInfinite ? null : _swipePage,
+                        onStroke: _addStroke,
+                        onErase: _eraseAt,
+                        onEraseStart: _eraseBegin,
+                        onEraseEnd: _eraseEnd,
+                        onElementTap: (element) {
+                          _tool = 'select';
+                          setState(() {});
+                          _onElementTap(element);
+                        },
+                        onSelection: _onSelection,
+                        onSelectionMove: _applySelectionMove,
+                        onSelectionScale: _applySelectionScale,
+                        onSelectionGestureEnd: _endSelectionTransform,
+                      ),
                     ),
                   ),
                 ),
@@ -1704,9 +1728,34 @@ class _EditorPageState extends State<EditorPage> {
               onPressed: _pageIndex > 0 ? () => _setPage(_pageIndex - 1) : null,
               icon: const Icon(Icons.chevron_left),
             ),
-            Text(
-              isInfinite ? '无极画布' : '第 ${_pageIndex + 1} / ${pages.length} 页',
-            ),
+            if (isInfinite)
+              const Padding(
+                padding: EdgeInsets.symmetric(horizontal: 8),
+                child: Text('无极画布'),
+              )
+            else
+              Tooltip(
+                message: '选择页面',
+                child: TextButton(
+                  key: const ValueKey('page-count-button'),
+                  onPressed: _showPagePicker,
+                  style: TextButton.styleFrom(
+                    minimumSize: Size.zero,
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 8,
+                      vertical: 4,
+                    ),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('第 ${_pageIndex + 1} / ${pages.length} 页'),
+                      const Icon(Icons.expand_more, size: 18),
+                    ],
+                  ),
+                ),
+              ),
             IconButton(
               tooltip: '下一页',
               onPressed: _pageIndex + 1 < pages.length
@@ -1745,6 +1794,29 @@ class _EditorPageState extends State<EditorPage> {
         ),
       ),
     );
+  }
+
+  Future<void> _showPagePicker() async {
+    final doc = _doc;
+    if (doc == null || doc['kind'] == 'infinite') return;
+    final pages = (doc['pages'] as List)
+        .map((value) => Map<String, dynamic>.from(value as Map))
+        .toList();
+    final selected = await showModalBottomSheet<int>(
+      context: context,
+      isScrollControlled: true,
+      useSafeArea: true,
+      showDragHandle: true,
+      builder: (context) => _PagePickerSheet(
+        document: doc,
+        pages: pages,
+        currentIndex: _pageIndex,
+        onSelect: (index) => Navigator.pop(context, index),
+      ),
+    );
+    if (selected != null && selected != _pageIndex && mounted) {
+      await _setPage(selected);
+    }
   }
 
   String _hexColor(Color color) {
@@ -1847,6 +1919,314 @@ class _ColorButton extends StatelessWidget {
       ),
     );
   }
+}
+
+class _PageSlideTransition extends StatefulWidget {
+  const _PageSlideTransition({
+    required this.pageKey,
+    required this.direction,
+    required this.child,
+  });
+
+  final Object pageKey;
+  final int direction;
+  final Widget child;
+
+  @override
+  State<_PageSlideTransition> createState() => _PageSlideTransitionState();
+}
+
+class _PageSlideTransitionState extends State<_PageSlideTransition>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _controller = AnimationController(
+    vsync: this,
+    duration: const Duration(milliseconds: 240),
+    value: 1,
+  );
+  Widget? _previousChild;
+  int _direction = 1;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller.addStatusListener((status) {
+      if (status == AnimationStatus.completed &&
+          _previousChild != null &&
+          mounted) {
+        setState(() => _previousChild = null);
+      }
+    });
+  }
+
+  @override
+  void didUpdateWidget(covariant _PageSlideTransition oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.pageKey != widget.pageKey) {
+      _previousChild = oldWidget.child;
+      _direction = widget.direction == 0 ? 1 : widget.direction;
+      _controller.forward(from: 0);
+    }
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final width = constraints.maxWidth;
+        final t = Curves.easeOutCubic.transform(_controller.value);
+        return ClipRect(
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              if (_previousChild != null)
+                Transform.translate(
+                  offset: Offset(-_direction * width * t, 0),
+                  child: Opacity(
+                    opacity: (1 - t).clamp(0.0, 1.0),
+                    child: IgnorePointer(child: _previousChild!),
+                  ),
+                )
+              else
+                const SizedBox.shrink(),
+              Transform.translate(
+                offset: Offset(_direction * width * (1 - t), 0),
+                child: Opacity(opacity: t.clamp(0.0, 1.0), child: widget.child),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _PagePickerSheet extends StatelessWidget {
+  const _PagePickerSheet({
+    required this.document,
+    required this.pages,
+    required this.currentIndex,
+    required this.onSelect,
+  });
+
+  final Map<String, dynamic> document;
+  final List<Map<String, dynamic>> pages;
+  final int currentIndex;
+  final ValueChanged<int> onSelect;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final height = MediaQuery.sizeOf(context).height * 0.72;
+    return SizedBox(
+      key: const ValueKey('page-picker'),
+      height: height,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(20, 0, 20, 4),
+            child: Row(
+              children: [
+                Text('页面', style: Theme.of(context).textTheme.titleLarge),
+                const SizedBox(width: 12),
+                Text(
+                  '当前第 ${currentIndex + 1} / ${pages.length} 页',
+                  style: TextStyle(color: scheme.onSurfaceVariant),
+                ),
+              ],
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 20),
+            child: Text(
+              '轻量页面卡片，非实时缩略图。点击卡片跳转。',
+              style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
+            ),
+          ),
+          const SizedBox(height: 12),
+          Expanded(
+            child: GridView.builder(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 20),
+              gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+                maxCrossAxisExtent: 128,
+                mainAxisExtent: 164,
+                crossAxisSpacing: 10,
+                mainAxisSpacing: 10,
+              ),
+              itemCount: pages.length,
+              itemBuilder: (context, index) => _PagePickerCard(
+                index: index,
+                page: pages[index],
+                document: document,
+                selected: index == currentIndex,
+                onTap: () => onSelect(index),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PagePickerCard extends StatelessWidget {
+  const _PagePickerCard({
+    required this.index,
+    required this.page,
+    required this.document,
+    required this.selected,
+    required this.onTap,
+  });
+
+  final int index;
+  final Map<String, dynamic> page;
+  final Map<String, dynamic> document;
+  final bool selected;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final isBook = document['kind'] == 'book';
+    final isSource =
+        page['isNotePage'] == false || page['sourceAssetId'] != null;
+    final label = isSource ? (isBook ? '源页' : '书页') : '笔记页';
+    final paper = document['paper'] as Map? ?? const {};
+    final background =
+        page['background'] as String? ??
+        paper['background'] as String? ??
+        'blank';
+    final sourceIndex = (page['sourceIndex'] as num?)?.toInt();
+    return Material(
+      key: ValueKey('page-card-$index'),
+      color: selected
+          ? scheme.primaryContainer.withValues(alpha: 0.5)
+          : scheme.surfaceContainerLow,
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(12),
+        side: BorderSide(
+          color: selected ? scheme.primary : scheme.outlineVariant,
+          width: selected ? 2 : 1,
+        ),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(8, 7, 8, 7),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Row(
+                children: [
+                  Text(
+                    '${index + 1}',
+                    style: TextStyle(
+                      fontWeight: FontWeight.w700,
+                      color: selected ? scheme.primary : scheme.onSurface,
+                    ),
+                  ),
+                  if (sourceIndex != null) ...[
+                    const SizedBox(width: 4),
+                    Expanded(
+                      child: Text(
+                        '源 ${sourceIndex + 1}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: 10,
+                          color: scheme.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ] else
+                    const Spacer(),
+                  if (selected)
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 5,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: scheme.primary,
+                        borderRadius: BorderRadius.circular(6),
+                      ),
+                      child: Text(
+                        '当前',
+                        style: TextStyle(fontSize: 9, color: scheme.onPrimary),
+                      ),
+                    ),
+                ],
+              ),
+              const SizedBox(height: 5),
+              Expanded(
+                child: Container(
+                  decoration: BoxDecoration(
+                    color: const Color(0xFFFFFCF5),
+                    border: Border.all(color: const Color(0xFFE0D6C7)),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  clipBehavior: Clip.antiAlias,
+                  child: CustomPaint(
+                    painter: _PagePickerPaperPainter(background: background),
+                  ),
+                ),
+              ),
+              const SizedBox(height: 5),
+              Text(
+                label,
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 11, color: scheme.onSurfaceVariant),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PagePickerPaperPainter extends CustomPainter {
+  const _PagePickerPaperPainter({required this.background});
+
+  final String background;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = const Color(0xFFB9CEDB).withValues(alpha: 0.5)
+      ..strokeWidth = 0.6;
+    if (background == 'ruled') {
+      for (double y = 10; y < size.height; y += 10) {
+        canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+      }
+    } else if (background == 'grid') {
+      for (double y = 10; y < size.height; y += 10) {
+        canvas.drawLine(Offset(0, y), Offset(size.width, y), paint);
+      }
+      for (double x = 10; x < size.width; x += 10) {
+        canvas.drawLine(Offset(x, 0), Offset(x, size.height), paint);
+      }
+    } else if (background == 'dotted') {
+      final dot = Paint()
+        ..color = const Color(0xFFB9CEDB).withValues(alpha: 0.6);
+      for (double y = 10; y < size.height; y += 10) {
+        for (double x = 10; x < size.width; x += 10) {
+          canvas.drawCircle(Offset(x, y), 0.8, dot);
+        }
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _PagePickerPaperPainter oldDelegate) =>
+      oldDelegate.background != background;
 }
 
 class _LayersSheet extends StatelessWidget {

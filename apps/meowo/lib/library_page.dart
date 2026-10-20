@@ -48,7 +48,7 @@ class _LibraryPageState extends State<LibraryPage> {
       builder: (context, _) {
         final scheme = Theme.of(context).colorScheme;
         final narrow = MediaQuery.sizeOf(context).width < 760;
-        return Column(
+        final content = Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Padding(
@@ -154,17 +154,23 @@ class _LibraryPageState extends State<LibraryPage> {
                     label: const Text('新建无极'),
                   ),
                   OutlinedButton.icon(
-                    onPressed: () => _guard(_importPdf),
+                    onPressed: state.importing
+                        ? null
+                        : () => _guard(_importPdf),
                     icon: const Icon(Icons.picture_as_pdf_outlined),
                     label: const Text('导入 PDF'),
                   ),
                   OutlinedButton.icon(
-                    onPressed: () => _guard(_importEpub),
+                    onPressed: state.importing
+                        ? null
+                        : () => _guard(_importEpub),
                     icon: const Icon(Icons.menu_book_outlined),
                     label: const Text('导入 EPUB'),
                   ),
                   OutlinedButton.icon(
-                    onPressed: () => _guard(_importMarkdown),
+                    onPressed: state.importing
+                        ? null
+                        : () => _guard(_importMarkdown),
                     icon: const Icon(Icons.code),
                     label: const Text('导入 Markdown'),
                   ),
@@ -310,6 +316,18 @@ class _LibraryPageState extends State<LibraryPage> {
                       ],
                     ),
             ),
+          ],
+        );
+        return Stack(
+          children: [
+            AbsorbPointer(absorbing: state.importing, child: content),
+            if (state.importing)
+              Positioned.fill(
+                child: PopScope(
+                  canPop: false,
+                  child: _ImportOverlay(label: state.importLabel ?? '文档'),
+                ),
+              ),
           ],
         );
       },
@@ -476,6 +494,57 @@ class _LibraryPageState extends State<LibraryPage> {
       await state.createFolder(name.text.trim());
     }
     name.dispose();
+  }
+}
+
+class _ImportOverlay extends StatelessWidget {
+  const _ImportOverlay({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Stack(
+      key: const ValueKey('import-progress'),
+      children: [
+        ModalBarrier(
+          dismissible: false,
+          color: Colors.black.withValues(alpha: 0.24),
+        ),
+        Center(
+          child: Card(
+            elevation: 8,
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const SizedBox(
+                    width: 34,
+                    height: 34,
+                    child: CircularProgressIndicator(strokeWidth: 3),
+                  ),
+                  const SizedBox(height: 18),
+                  Text(
+                    '正在导入 $label…',
+                    style: Theme.of(context).textTheme.titleMedium,
+                  ),
+                  const SizedBox(height: 6),
+                  Text(
+                    '导入在后台进行，请保持应用打开。',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: scheme.onSurfaceVariant,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 }
 

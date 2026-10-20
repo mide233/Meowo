@@ -30,6 +30,7 @@ class CanvasView extends StatefulWidget {
     required this.onSelectionMove,
     required this.onSelectionScale,
     required this.onSelectionGestureEnd,
+    this.onPageSwipe,
     this.viewResetToken = 0,
   });
 
@@ -57,6 +58,11 @@ class CanvasView extends StatefulWidget {
   final void Function(Offset delta) onSelectionMove;
   final void Function(Rect bounds) onSelectionScale;
   final VoidCallback onSelectionGestureEnd;
+
+  /// Optional album-style page navigation. The callback receives -1 for the
+  /// previous page and +1 for the next page. Null disables page swipes (for
+  /// example in infinite documents).
+  final ValueChanged<int>? onPageSwipe;
   final int viewResetToken;
 
   @override
@@ -92,6 +98,25 @@ class _CanvasViewState extends State<CanvasView> {
   Offset _baseCenter = Offset.zero;
   double _baseDistance = 1.0;
 
+  Size _viewportSize = Size.zero;
+  Size _pageSize = Size.zero;
+  Offset? _swipeStart;
+  Duration _swipeStartTime = Duration.zero;
+  int? _swipePointer;
+  bool _swipeFromEdge = false;
+  bool _swipeCandidate = false;
+
+  bool get _atFitZoom => !_needsFit && (_zoom - 1.0).abs() < 0.02;
+
+  Rect get _pagePixelRect => Rect.fromLTWH(
+    _offset.dx,
+    _offset.dy,
+    _pageSize.width * _lastScale,
+    _pageSize.height * _lastScale,
+  );
+
+  bool _isOnPage(Offset local) => _pagePixelRect.contains(local);
+
   @override
   void didUpdateWidget(covariant CanvasView oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -104,6 +129,7 @@ class _CanvasViewState extends State<CanvasView> {
       _panning = false;
       _viewGesture = false;
       _touches.clear();
+      _clearSwipe();
     }
   }
 
@@ -142,6 +168,8 @@ class _CanvasViewState extends State<CanvasView> {
         }
         final scale = fitScale * _zoom;
         _lastScale = scale;
+        _viewportSize = viewport;
+        _pageSize = Size(width, height);
         final canvasSize = Size(width * scale, height * scale);
         return SizedBox(
           width: viewport.width,
@@ -238,6 +266,14 @@ class _CanvasViewState extends State<CanvasView> {
         _startViewGesture();
         return;
       }
+      if (widget.onPageSwipe != null && _atFitZoom) {
+        final fromEdge = !_isOnPage(event.localPosition);
+        if (fromEdge || widget.tool == 'hand') {
+          _beginSwipe(event, fromEdge: fromEdge);
+          // A swipe that starts in the gray gutter must never draw or pan.
+          if (fromEdge) return;
+        }
+      }
     }
     if (event.kind == PointerDeviceKind.mouse &&
         (event.buttons & kMiddleMouseButton) != 0) {
@@ -272,6 +308,43 @@ class _CanvasViewState extends State<CanvasView> {
         ..clear()
         ..add(_pressure(event));
     });
+  }
+
+  void _beginSwipe(PointerDownEvent event, {required bool fromEdge}) {
+    _swipeCandidate = true;
+    _swipeFromEdge = fromEdge;
+    _swipeStart = event.localPosition;
+    _swipeStartTime = event.timeStamp;
+    _swipePointer = event.pointer;
+  }
+
+  void _clearSwipe() {
+    _swipeCandidate = false;
+    _swipeFromEdge = false;
+    _swipeStart = null;
+    _swipePointer = null;
+  }
+
+  int _swipeDirection(PointerUpEvent event) {
+    if (!_swipeCandidate || _swipePointer != event.pointer) return 0;
+    final start = _swipeStart;
+    if (start == null) return 0;
+    final delta = event.localPosition - start;
+    final elapsed = event.timeStamp - _swipeStartTime;
+    final milliseconds = math.max(1, elapsed.inMilliseconds);
+    final speed = delta.dx.abs() / milliseconds;
+    final minDistance = _swipeFromEdge
+        ? math.max(56.0, _viewportSize.width * 0.10)
+        : math.max(120.0, _viewportSize.width * 0.18);
+    final horizontal = delta.dx.abs() >= delta.dy.abs() * 1.6;
+    final fastEnough = elapsed.inMilliseconds <= 650 && speed >= 0.4;
+    if (!horizontal ||
+        delta.dx.abs() < minDistance ||
+        !fastEnough ||
+        !_atFitZoom) {
+      return 0;
+    }
+    return delta.dx < 0 ? 1 : -1;
   }
 
   void _onMove(PointerMoveEvent event) {
@@ -331,6 +404,16 @@ class _CanvasViewState extends State<CanvasView> {
       }
       return;
     }
+    if (_swipeCandidate) {
+      final direction = _swipeDirection(event);
+      _clearSwipe();
+      if (direction != 0) {
+        if (_panning) setState(() => _panning = false);
+        _panLast = null;
+        widget.onPageSwipe?.call(direction);
+        return;
+      }
+    }
     if (_panning) {
       setState(() => _panning = false);
       _panLast = null;
@@ -385,6 +468,7 @@ class _CanvasViewState extends State<CanvasView> {
   }
 
   void _cancelActiveGesture() {
+    _clearSwipe();
     if (_drawing) {
       setState(() {
         _drawing = false;
@@ -558,6 +642,7 @@ class _CanvasViewState extends State<CanvasView> {
 
   void _cancel(int pointer) {
     _touches.remove(pointer);
+    if (_swipePointer == pointer) _clearSwipe();
     if (_viewGesture) {
       if (_touches.length < 2) {
         _viewGesture = false;

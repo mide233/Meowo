@@ -23,6 +23,8 @@ class AppState extends ChangeNotifier {
   String searchQuery = '';
   String? selectedFolderId;
   bool loading = false;
+  bool importing = false;
+  String? importLabel;
   String? error;
 
   Map<String, dynamic> get info => core.call('workspace_info');
@@ -103,17 +105,32 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> _importInBackground(String op, String path) async {
-    final root = libraryRoot;
-    final result = await Isolate.run(() async {
-      final worker = await MeowoCore.open(root, acquireLock: false);
-      try {
-        return worker.call(op, {'sourcePath': path});
-      } finally {
-        worker.close();
-      }
-    });
-    await refresh();
-    await openDocument(result['id'] as String);
+    if (importing) return;
+    importing = true;
+    importLabel = switch (op) {
+      'import_pdf' => 'PDF',
+      'import_epub' => 'EPUB',
+      _ => 'Markdown',
+    };
+    error = null;
+    notifyListeners();
+    try {
+      final root = libraryRoot;
+      final result = await Isolate.run(() async {
+        final worker = await MeowoCore.open(root, acquireLock: false);
+        try {
+          return worker.call(op, {'sourcePath': path});
+        } finally {
+          worker.close();
+        }
+      });
+      await refresh();
+      await openDocument(result['id'] as String);
+    } finally {
+      importing = false;
+      importLabel = null;
+      notifyListeners();
+    }
   }
 
   Future<void> importMarkdown(String path) =>
