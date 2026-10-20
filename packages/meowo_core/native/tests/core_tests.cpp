@@ -664,6 +664,15 @@ TEST(Core, ExportBookPdfRequiresExplicitOverwrite) {
                                       {"overwrite", true}});
   EXPECT_FALSE(overwritten["cancelled"].get<bool>());
   EXPECT_TRUE(fs::exists(target));
+  EXPECT_THROW(
+      core.call({{"op", "export_book_pdf"},
+                 {"documentId", imported["id"]},
+                 {"targetPath",
+                  (temp.path / "documents" / (imported["id"].get<std::string>() + ".meowo"))
+                      .string()},
+                 {"pageIndexes", {0}},
+                 {"overwrite", true}}),
+      std::runtime_error);
 }
 
 TEST(Core, ExportBookPdfHonorsCancelAndWritesProgress) {

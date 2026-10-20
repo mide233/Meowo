@@ -1442,6 +1442,11 @@ class Workspace {
     }
 
     const fs::path document_file = document_path(root_, doc_id);
+    std::error_code path_ec;
+    if (fs::absolute(target_path, path_ec).lexically_normal() ==
+        fs::absolute(document_file, path_ec).lexically_normal()) {
+      throw CoreError("不能把 PDF 导出覆盖到当前文档文件");
+    }
     const json doc = load_document_payload(document_file);
     if (doc.value("kind", "") != "book") {
       throw CoreError("只有喵书籍支持矢量 PDF 导出");
