@@ -641,6 +641,37 @@ TEST(Core, ExportBookPdfFallsBackToPagePngAndReportsIt) {
   fz_drop_context(ctx);
 }
 
+TEST(Core, ExportBookPdfFallsBackForEncryptedAndEpubSources) {
+  TempDir temp;
+  Core core(temp.path);
+  const fs::path pdf = temp.path / "encrypted-source.pdf";
+  write_geometry_pdf(pdf);
+  const json imported = core.call({{"op", "import_pdf"}, {"sourcePath", pdf.string()}});
+  json doc = core.call({{"op", "open_document"}, {"id", imported["id"]}});
+  doc["bookSource"]["encrypted"] = true;
+  core.call({{"op", "save_document"}, {"document", doc}});
+  const json encrypted = core.call({{"op", "export_book_pdf"},
+                                    {"documentId", imported["id"]},
+                                    {"targetPath", (temp.path / "encrypted.pdf").string()},
+                                    {"pageIndexes", {0}}});
+  EXPECT_EQ(encrypted["vectorPages"], json::array());
+  ASSERT_EQ(encrypted["fallbackPages"].size(), 1u);
+  EXPECT_EQ(encrypted["fallbackPages"][0]["reason"],
+            "encrypted_pdf_no_password");
+
+  doc = core.call({{"op", "open_document"}, {"id", imported["id"]}});
+  doc["bookSource"]["encrypted"] = false;
+  doc["bookSource"]["mime"] = "application/epub+zip";
+  core.call({{"op", "save_document"}, {"document", doc}});
+  const json epub = core.call({{"op", "export_book_pdf"},
+                               {"documentId", imported["id"]},
+                               {"targetPath", (temp.path / "epub.pdf").string()},
+                               {"pageIndexes", {0}}});
+  EXPECT_EQ(epub["vectorPages"], json::array());
+  ASSERT_EQ(epub["fallbackPages"].size(), 1u);
+  EXPECT_EQ(epub["fallbackPages"][0]["reason"], "epub_fixed_page");
+}
+
 TEST(Core, ExportBookPdfRequiresExplicitOverwrite) {
   TempDir temp;
   Core core(temp.path);

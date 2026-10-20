@@ -47,12 +47,13 @@
 
 ### 3.1 C++
 
-`ctest`：16 个 gtest 全部通过。新增/覆盖：
+`ctest`：17 个 gtest 全部通过。新增/覆盖：
 
 - `ExportBookPdfPreservesVectorGeometryAndDropsTextLayer`：400×300 MediaBox、CropBox [20 30 380 270]、Rotate 90；导出后页面盒/旋转一致；`stext` 提取不到 `GEOMETRY_SECRET`；资源无 `/Font`；内容流有路径；导出页与源页 72 dpi 渲染平均通道差 <3.0。
 - `ExportBookPdfWritesInkAndHighlighterAsPaths`：内容流有颜色/路径/描边；ExtGState 有 `/BM /Multiply` 与约 0.32 alpha。
 - `ExportBookPdfUsesPaperSizeForNotePagesAndHonorsRanges`：源页 + 笔记页 + 源页共 3 页；笔记页 MediaBox 等于书籍纸张；单页范围只输出第 2 源页；叠加 PNG 作为 XObject 嵌入并在页面中心渲染为红色。
 - `ExportBookPdfFallsBackToPagePngAndReportsIt`：无 `bookSource` 的 `import_pdf_pages` 书籍输出 1 页 PNG，报告 `missing_book_source`，页面有 XObject。
+- `ExportBookPdfFallsBackForEncryptedAndEpubSources`：`bookSource.encrypted=true` 返回 `encrypted_pdf_no_password`；EPUB 源返回 `epub_fixed_page`；两者都无 `vectorPages`。
 - `ExportBookPdfRequiresExplicitOverwrite`：默认拒绝覆盖，显式 `overwrite:true` 成功；目标等于当前 `.meowo` 文件时即使 `overwrite:true` 也拒绝。
 - `ExportBookPdfHonorsCancelAndWritesProgress`：取消文件返回 `cancelled` 且不产出文件；进度文件最终为 `done/1/1`。
 - Dart `core_test.dart` 的加密 PDF 用例额外验证导出 `fallbackPages.reason == encrypted_pdf_no_password` 且无 `vectorPages`。
