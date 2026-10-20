@@ -34,7 +34,7 @@ flowchart TB
     Doc["Document model\nPages / Layers / Elements / Commands / Undo"]
     Ink["Ink engine\nPressure / Smoothing / Hit-test / Erase / Spatial index"]
     Store["Persistence\nSQLite / migrations / autosave / assets"]
-    Book["BookEngine adapter\nPDFium / EPUB import pipeline"]
+    Book["BookEngine adapter\nMuPDF / EPUB import pipeline"]
     Jobs["Job scheduler / worker pool"]
     TextIndex["FTS / metadata cache"]
   end
@@ -83,8 +83,8 @@ flowchart TB
 | FFI | Dart `ffi` + `ffigen` | C ABI 稳定边界；生成代码提交并校验 |
 | 存储 | SQLite 3（amalgamation 或系统库统一方案） | WAL、事务、FTS5；必须跨三平台版本一致 |
 | 序列化 | FlatBuffers（元素 payload、图书页元数据） | 版本化、零拷贝解析、可 fuzz；schema 源文件入库 |
-| PDF | PDFium | 宽松许可证；在 C++ 内渲染位图 |
-| EPUB | 待定（OQ-001） | 建议导入时转换为固定页面 → 以便稳定批注；具体引擎 Phase 0 决定 |
+| PDF/EPUB | MuPDF 1.26.3（AGPL） | 统一渲染为固定页 PNG；保留源文件；许可证义务见 OQ-011 |
+| EPUB | MuPDF 1.26.3（AGPL） | 导入时固定 A4 布局并渲染为页面；保留原 EPUB；不提供重排 |
 | 文本渲染 | Dart Markdown parser + Flutter widgets | 本地渲染；公式用 KaTeX 兼容实现；不使用远程资源 |
 | 构建 | CMake + Ninja + CTest | C++ 核心独立构建；Flutter FFI 插件集成 |
 | 测试 | GoogleTest/GoogleMock + flutter_test + integration_test | C++ 单测、Dart Widget、端到端 |
@@ -151,10 +151,10 @@ ffi / jobs
 ```
 
 - `base` 不依赖业务模块。
-- `document` 不依赖具体数据库、PDFium 或 Flutter。
+- `document` 不依赖具体数据库、MuPDF 或 Flutter。
 - `ink` 依赖几何与文档元素抽象，不依赖渲染后端。
 - `storage` 实现文档持久化；`document` 通过接口调用。
-- `book` 封装外部引擎；不得让 PDFium 类型进入业务层。
+- `book` 封装外部引擎；不得让 MuPDF 类型进入业务层。
 - `ffi` 只做 ABI 转换、句柄与错误边界。
 
 ## 5. C++23 核心设计
@@ -214,8 +214,8 @@ ffi / jobs
 #### `book`
 
 - `BookEngine` 接口与注册表；
-- PDFium 适配器；
-- EPUB 导入/分页策略（待许可证）；
+- MuPDF 适配器（PDF/EPUB 统一）；
+- EPUB 固定页布局与源文件保留；
 - 图书页渲染请求、优先级、取消、位图输出；
 - 目录、页数、页面尺寸、元数据；
 - 页面缓存与错误隔离。
@@ -280,7 +280,7 @@ ffi / jobs
   - `retryable`；
   - 可选 `path`/`pageId`（安全范围内）。
 - FFI 不抛 C++ 异常。
-- 用户可见错误由 Dart 映射为本地化文案；不得把 SQLite/PDFium 原始英文错误直接展示。
+- 用户可见错误由 Dart 映射为本地化文案；不得把 SQLite/MuPDF 原始英文错误直接展示。
 
 ## 6. FFI 契约
 
@@ -337,7 +337,7 @@ C ABI 不直接被业务 Widget 调用。Dart 包提供：
 
 1. Dart 请求某页指定缩放级别的位图。
 2. C++ 检查缓存；未命中则提交 BookEngine 任务，低优先级排队。
-3. PDFium 在 worker 线程渲染 RGB/RGBA 缓冲。
+3. MuPDF 在 worker 线程渲染 RGB/RGBA 缓冲。
 4. 回调/事件返回 buffer 元数据与 job 结果。
 5. Dart 创建 `ui.Image` 并缓存，绘制在图书背景层。
 6. 视口变化时取消不可见页任务，保留有限缓存。

@@ -1,5 +1,8 @@
 #include "meowo_core.h"
 
+#include "mupdf_import.h"
+
+#include <iomanip>
 #include <nlohmann/json.hpp>
 #include <sqlite3.h>
 
@@ -8,6 +11,7 @@
 #include <atomic>
 #include <chrono>
 #include <cmath>
+#include <cctype>
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
@@ -24,10 +28,6 @@
 #include <unordered_map>
 #include <utility>
 #include <vector>
-
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
@@ -345,49 +345,6 @@ std::pair<int, int> png_size(const fs::path& path) {
   return {width, height};
 }
 
-struct ProcessResult {
-  int exit_code = -1;
-  std::string output;
-};
-
-ProcessResult run_process(const std::vector<std::string>& args) {
-  if (args.empty()) throw CoreError("空命令");
-  int pipefd[2];
-  if (pipe(pipefd) != 0) throw CoreError("无法创建进程管道");
-  const pid_t pid = fork();
-  if (pid < 0) {
-    close(pipefd[0]);
-    close(pipefd[1]);
-    throw CoreError("无法启动进程");
-  }
-  if (pid == 0) {
-    close(pipefd[0]);
-    dup2(pipefd[1], STDOUT_FILENO);
-    dup2(pipefd[1], STDERR_FILENO);
-    close(pipefd[1]);
-    std::vector<char*> argv;
-    argv.reserve(args.size() + 1);
-    for (const auto& arg : args) argv.push_back(const_cast<char*>(arg.c_str()));
-    argv.push_back(nullptr);
-    execvp(argv[0], argv.data());
-    _exit(127);
-  }
-  close(pipefd[1]);
-  std::string output;
-  std::array<char, 4096> buffer{};
-  ssize_t n;
-  while ((n = read(pipefd[0], buffer.data(), buffer.size())) > 0) {
-    output.append(buffer.data(), static_cast<size_t>(n));
-  }
-  close(pipefd[0]);
-  int status = 0;
-  waitpid(pid, &status, 0);
-  ProcessResult result;
-  result.output = std::move(output);
-  if (WIFEXITED(status)) result.exit_code = WEXITSTATUS(status);
-  return result;
-}
-
 /* ------------------------------------------------------------------------- */
 /* Document persistence                                                      */
 /* ------------------------------------------------------------------------- */
@@ -557,6 +514,8 @@ std::string searchable_text(const json& doc) {
       text += body->value("markdown", "");
       text.push_back('\n');
     }
+    text += page.value("sourceText", "");
+    text.push_back('\n');
     for (const auto& layer : page.value("layers", json::array())) {
       if (!layer.is_object()) continue;
       for (const auto& element : layer.value("elements", json::array())) {
@@ -620,6 +579,7 @@ class Workspace {
     if (op == "get_asset") return get_asset(request);
     if (op == "import_markdown") return import_markdown(request);
     if (op == "import_pdf") return import_pdf(request);
+    if (op == "import_epub") return import_epub(request);
     if (op == "import_pdf_pages") return import_pdf_pages(request);
     if (op == "export_document") return export_document(request);
     if (op == "statistics") return statistics();
@@ -991,73 +951,89 @@ class Workspace {
     return json{{"id", id}, {"title", title}, {"pages", 1}};
   }
 
-  json import_pdf(const json& request) {
+  json import_book(const json& request, const std::string& format) {
     const std::string source = request.value("sourcePath", "");
-    if (source.empty()) throw CoreError("缺少 PDF 路径");
+    if (source.empty()) throw CoreError("缺少 " + format + " 路径");
     fs::path source_path(source);
-    if (!fs::exists(source_path)) throw CoreError("PDF 文件不存在");
-    const ProcessResult info = run_process({"pdfinfo", source_path.string()});
-    if (info.exit_code != 0) {
-      throw CoreError("无法读取 PDF（可能加密或不支持）: " + info.output);
-    }
-    int page_count = 0;
-    std::istringstream lines(info.output);
-    std::string line;
-    while (std::getline(lines, line)) {
-      if (line.rfind("Pages:", 0) == 0) {
-        page_count = std::stoi(line.substr(6));
-        break;
-      }
-    }
-    if (page_count <= 0) throw CoreError("无法确定 PDF 页数");
-    if (page_count > 500) throw CoreError("首版单次最多导入 500 页 PDF");
-    const std::string title = request.value("title", title_from_path(source_path));
+    if (!fs::exists(source_path)) throw CoreError(format + " 文件不存在");
+
+    std::error_code size_ec;
+    const auto source_size = fs::file_size(source_path, size_ec);
+    if (size_ec) throw CoreError("无法读取文件大小");
+    if (source_size > kMaxAssetBytes) throw CoreError("原始书籍超过 512 MiB");
+
     const std::string id = new_id("doc");
     const fs::path temp = root_ / ".import" / id;
     ensure_dir(temp);
-    const std::string prefix = (temp / "page").string();
-    const ProcessResult rendered =
-        run_process({"pdftoppm", "-png", "-r", "120", source_path.string(), prefix});
-    if (rendered.exit_code != 0) {
-      std::error_code ec;
-      fs::remove_all(temp, ec);
-      throw CoreError("PDF 渲染失败: " + rendered.output);
+    struct Cleanup {
+      fs::path path;
+      ~Cleanup() {
+        std::error_code ec;
+        fs::remove_all(path, ec);
+      }
+    } cleanup{temp};
+
+    MuPdfResult result;
+    try {
+      result = render_with_mupdf(source_path.string(), temp.string(),
+                                 request.value("password", ""), 500);
+    } catch (const std::exception& e) {
+      throw CoreError(std::string("MuPDF 渲染失败: ") + e.what());
     }
-    std::vector<fs::path> pages;
-    for (const auto& entry : fs::directory_iterator(temp)) {
-      if (entry.is_regular_file() && entry.path().extension() == ".png") {
-        pages.push_back(entry.path());
+    if (!result.ok) {
+      throw CoreError(result.error.empty() ? "无法渲染书籍" : result.error);
+    }
+    if (result.pageCount <= 0 || result.pages.size() != static_cast<size_t>(result.pageCount)) {
+      throw CoreError("MuPDF 未返回有效页面");
+    }
+
+    std::string title = request.value("title", "");
+    if (title.empty()) title = result.title;
+    if (format == "epub" && !title.empty()) {
+      std::string lower = title;
+      std::transform(lower.begin(), lower.end(), lower.begin(),
+                     [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+      if (lower.ends_with(".html") || lower.ends_with(".xhtml") || lower.ends_with(".htm")) {
+        title.clear();
       }
     }
-    std::sort(pages.begin(), pages.end(), [](const fs::path& a, const fs::path& b) {
-      const std::string an = a.stem().string();
-      const std::string bn = b.stem().string();
-      const auto apos = an.find_last_of('-');
-      const auto bpos = bn.find_last_of('-');
-      const int ai = apos == std::string::npos ? 0 : std::stoi(an.substr(apos + 1));
-      const int bi = bpos == std::string::npos ? 0 : std::stoi(bn.substr(bpos + 1));
-      return ai < bi;
-    });
-    if (pages.empty()) {
-      std::error_code ec;
-      fs::remove_all(temp, ec);
-      throw CoreError("PDF 没有可渲染页面");
-    }
+    if (title.empty()) title = title_from_path(source_path);
+
     json doc = make_document(id, title, "book", Paper{"A4", 595.276, 841.89, "blank"});
     doc["pages"] = json::array();
     doc["assets"] = json::array();
     std::vector<std::pair<std::string, std::pair<std::string, std::string>>> assets;
-    for (size_t i = 0; i < pages.size(); ++i) {
-      const auto [pixel_w, pixel_h] = png_size(pages[i]);
-      const double width = pixel_w * 72.0 / 120.0;
-      const double height = pixel_h * 72.0 / 120.0;
+    double paper_width = 0;
+    double paper_height = 0;
+    for (int i = 0; i < result.pageCount; ++i) {
+      std::ostringstream stem;
+      stem << "page-" << std::setw(4) << std::setfill('0') << (i + 1);
+      const fs::path png = temp / (stem.str() + ".png");
+      if (!fs::exists(png)) throw CoreError("MuPDF 页面缺失: " + png.string());
+      const fs::path txt = temp / (stem.str() + ".txt");
+      std::string source_text;
+      if (fs::exists(txt)) source_text = read_file(txt);
+
+      const auto [pixel_w, pixel_h] = png_size(png);
+      double width = result.pages[static_cast<size_t>(i)].width;
+      double height = result.pages[static_cast<size_t>(i)].height;
+      if (width <= 0 || height <= 0) {
+        width = pixel_w * 72.0 / 120.0;
+        height = pixel_h * 72.0 / 120.0;
+      }
+      const std::string bytes = read_file(png);
+      if (bytes.size() > kMaxAssetBytes) throw CoreError("书籍页面图片超过 512 MiB");
+      if (i == 0) {
+        paper_width = width;
+        paper_height = height;
+      }
       const std::string asset_id = new_id("asset");
-      const std::string bytes = read_file(pages[i]);
-      assets.push_back({asset_id, {pages[i].filename().string(), bytes}});
+      assets.push_back({asset_id, {png.filename().string(), bytes}});
       json page = page_json(width, height);
       page["isNotePage"] = false;
-      page["sourceIndex"] = static_cast<int>(i);
+      page["sourceIndex"] = i;
       page["sourceAssetId"] = asset_id;
+      page["sourceText"] = source_text;
       doc["pages"].push_back(page);
       doc["assets"].push_back(json{{"id", asset_id},
                                    {"name", "第 " + std::to_string(i + 1) + " 页"},
@@ -1065,19 +1041,50 @@ class Workspace {
                                    {"size", bytes.size()},
                                    {"kind", "book_page"}});
     }
-    doc["paper"]["width"] = doc["pages"][0]["width"];
-    doc["paper"]["height"] = doc["pages"][0]["height"];
+
+    const std::string source_asset_id = new_id("asset");
+    const std::string source_mime =
+        format == "epub" ? "application/epub+zip" : "application/pdf";
+    const std::string source_bytes = read_file(source_path);
+    assets.push_back({source_asset_id, {source_path.filename().string(), source_bytes}});
+    doc["assets"].push_back(json{{"id", source_asset_id},
+                                 {"name", source_path.filename().string()},
+                                 {"mime", source_mime},
+                                 {"size", source_bytes.size()},
+                                 {"kind", "book_source"}});
+    doc["bookSource"] = json{{"assetId", source_asset_id},
+                             {"mime", source_mime},
+                             {"engine", "mupdf"},
+                             {"version", result.version},
+                             {"pageCount", result.pageCount},
+                             {"title", result.title},
+                             {"author", result.author},
+                             {"format", result.format}};
+    doc["paper"]["width"] = paper_width;
+    doc["paper"]["height"] = paper_height;
+
     const fs::path target = document_path(root_, id);
     save_document_payload(target, doc);
     for (const auto& [asset_id, payload] : assets) {
-      save_asset(target, asset_id, payload.first, "image/png", payload.second);
+      const std::string& mime = asset_id == source_asset_id ? source_mime : "image/png";
+      save_asset(target, asset_id, payload.first, mime, payload.second);
     }
     Transaction tx(db_);
     insert_catalog(doc);
     tx.commit();
-    std::error_code ec;
-    fs::remove_all(temp, ec);
-    return json{{"id", id}, {"title", title}, {"pages", doc["pages"].size()}};
+    return json{{"id", id},
+                {"title", title},
+                {"pages", doc["pages"].size()},
+                {"engine", "mupdf"},
+                {"version", result.version}};
+  }
+
+  json import_pdf(const json& request) {
+    return import_book(request, "pdf");
+  }
+
+  json import_epub(const json& request) {
+    return import_book(request, "epub");
   }
 
   json import_pdf_pages(const json& request) {

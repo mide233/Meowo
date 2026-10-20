@@ -1,6 +1,2 @@
-50b393844d40b0f770f3e878fd2dd06222d482f9fefd5ef7c4e0e82a16dfc7e4  dist/meowo-1.0.0-alpha.1-android-arm64.apk
-fc4236ad0bcc0299b47c815bf60785d572dfd623b526c6108576dbfd6579e748  dist/meowo-1.0.0-alpha.2-android-arm64.apk
-a16db69929edb53e7cfcf26683aaa1857b0ca1152fba6432021ab207ff880c2e  dist/meowo-1.0.0-alpha.3-android-arm64.apk
-291bd7179ff21a97cd5f7106a93ec11d5ac1e8d04d5a34c861c62c9e2aba5203  dist/meowo-1.0.0-alpha.1-linux-x64.tar.gz
-8428347663abc23a65203667026943931bb7fda82ae4aa53c0678fdbc76e5263  dist/meowo-1.0.0-alpha.2-linux-x64.tar.gz
-d2dcf995bc6469243cd3feebf6431c182b12c2ad0c7aab33428798a46e7f9283  dist/meowo-1.0.0-alpha.3-linux-x64.tar.gz
+90d54e037b2810a2ebd4befa52c64522c54930290c4d6bb84270a66fb2d9c1b0  meowo-1.0.0-alpha.4-linux-x64.tar.gz
+798b5bf54f8a7c6c0f3f47055ad84581f193f763df3b5f427fac14b1d563330e  meowo-1.0.0-alpha.4-android-arm64.apk

@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
@@ -159,12 +158,11 @@ class _LibraryPageState extends State<LibraryPage> {
                     icon: const Icon(Icons.picture_as_pdf_outlined),
                     label: const Text('导入 PDF'),
                   ),
-                  if (!Platform.isAndroid)
-                    OutlinedButton.icon(
-                      onPressed: () => _guard(_importEpub),
-                      icon: const Icon(Icons.menu_book_outlined),
-                      label: const Text('导入 EPUB'),
-                    ),
+                  OutlinedButton.icon(
+                    onPressed: () => _guard(_importEpub),
+                    icon: const Icon(Icons.menu_book_outlined),
+                    label: const Text('导入 EPUB'),
+                  ),
                   OutlinedButton.icon(
                     onPressed: () => _guard(_importMarkdown),
                     icon: const Icon(Icons.code),

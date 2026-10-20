@@ -1,13 +1,9 @@
 import 'dart:convert';
 import 'dart:io';
 
-import 'package:flutter/services.dart';
-import 'package:path_provider/path_provider.dart';
-
 import 'package:flutter/foundation.dart';
 
 import 'core/meowo_core.dart';
-import 'pdf_android.dart';
 
 enum LibraryFilter { all, favorites, trash }
 
@@ -112,91 +108,15 @@ class AppState extends ChangeNotifier {
   }
 
   Future<void> importPdf(String path) async {
-    if (Platform.isAndroid) {
-      final temp = await getTemporaryDirectory();
-      final stamp = DateTime.now().microsecondsSinceEpoch;
-      final output = Directory('${temp.path}/meowo-pdf-$stamp');
-      try {
-        final pages = await PdfAndroidRenderer.render(
-          path: path,
-          outputDir: output.path,
-        );
-        if (pages.isEmpty) {
-          throw MeowoException('PDF 没有可渲染页面');
-        }
-        final result = core.call('import_pdf_pages', {
-          'title': _titleFromPath(path, 'PDF'),
-          'pages': pages,
-        });
-        await refresh();
-        await openDocument(result['id'] as String);
-      } finally {
-        if (await output.exists()) {
-          await output.delete(recursive: true);
-        }
-      }
-      return;
-    }
     final result = core.call('import_pdf', {'sourcePath': path});
     await refresh();
     await openDocument(result['id'] as String);
   }
 
-  String _titleFromPath(String path, String fallback) {
-    final segments = File(path).uri.pathSegments;
-    if (segments.isEmpty) return fallback;
-    final name = segments.last;
-    final dot = name.lastIndexOf('.');
-    return dot > 0 ? name.substring(0, dot) : name;
-  }
-
   Future<void> importEpub(String path) async {
-    if (!Platform.isLinux && !Platform.isWindows) {
-      throw MeowoException(
-        '首版 EPUB 固定页快照依赖桌面 Chrome；Android 导入将在 MuPDF 接入后启用。',
-      );
-    }
-    final temp = await getTemporaryDirectory();
-    final stamp = DateTime.now().microsecondsSinceEpoch;
-    final script = File('${temp.path}/meowo_epub_to_pdf.py');
-    final pdf = File('${temp.path}/meowo_epub_$stamp.pdf');
-    await script.writeAsString(
-      await rootBundle.loadString('assets/epub_to_pdf.py'),
-    );
-    try {
-      final result = await Process.run('python3', [
-        script.path,
-        path,
-        pdf.path,
-      ]);
-      if (result.exitCode != 0) {
-        throw MeowoException('EPUB 转换失败: ${result.stderr}');
-      }
-      final title = File(path).uri.pathSegments.isEmpty
-          ? 'EPUB'
-          : File(path).uri.pathSegments.last
-                .replaceAll(RegExp(r'\.epub$', caseSensitive: false), '');
-      final imported = core.call('import_pdf', {
-        'sourcePath': pdf.path,
-        'title': title,
-      });
-      final bytes = await File(path).readAsBytes();
-      core.call('add_asset', {
-        'documentId': imported['id'],
-        'name': File(path).uri.pathSegments.last,
-        'mime': 'application/epub+zip',
-        'data': base64Encode(bytes),
-      });
-      await refresh();
-      await openDocument(imported['id'] as String);
-    } finally {
-      try {
-        await script.delete();
-      } catch (_) {}
-      try {
-        await pdf.delete();
-      } catch (_) {}
-    }
+    final result = core.call('import_epub', {'sourcePath': path});
+    await refresh();
+    await openDocument(result['id'] as String);
   }
 
   Future<void> openDocument(String id) async {

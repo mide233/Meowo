@@ -408,12 +408,13 @@
 
 ### OQ-011 · MuPDF 构建、AGPL 合规与安全更新
 
-**问题**：MuPDF 的构建方式、版本锁定、AGPL 源码提供方式、体积与 CVE 跟进流程尚未落地。
+**状态**：`Partially Resolved`（技术接入完成；发布合规与真机验收未完成）
+**问题**：MuPDF 的版本锁定、AGPL 源码提供方式、体积与 CVE 跟进流程尚未完全落地。
 **影响**：书籍阶段、发布物合规、APK/安装包体积。
 **负责人**：项目负责人 + Agent  
-**截止**：Phase 4 开始前
+**截止**：1.0 发布前
 
-**实现现状（2026-10-20）**：未接入。Alpha 使用 Poppler `pdftoppm` 生成 PDF 固定页 PNG，EPUB 使用桌面 Chrome 转 PDF；均为过渡桥，不满足最终 MuPDF 统一引擎要求。
+**实现现状（2026-10-20，Alpha.4）**：MuPDF 1.26.3 已统一接入 PDF 与 EPUB，Linux 与 Android arm64 均编译链接成功。PDF/EPUB 导入生成 120 dpi 固定页 PNG，原文件作为 `book_source` 资产保留，EPUB 文本层可抽取。Android 侧已移除 `PdfRenderer`，桌面已移除 Poppler/Chrome 过渡桥。APK 仍为 debug 签名，且未做真机导入/渲染验收；AGPL 源码提供、许可证清单、CVE 订阅和正式签名仍未完成。
 
 ### OQ-012 · 品牌与图标资产
 

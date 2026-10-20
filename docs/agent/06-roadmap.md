@@ -55,7 +55,7 @@
 5. 输入/笔压 spike：Android 笔、Windows 触控笔、Linux 可用输入设备；
 6. 渲染/笔迹性能 spike：10k–20k 笔迹、平移/缩放、延迟测量方法；
 7. SQLite 格式 spike：schema、WAL、事务、崩溃恢复、迁移样例；
-8. PDFium 集成 spike；EPUB 引擎许可证与能力评估；
+8. MuPDF 集成与许可证评估（Linux/Android 已在 Alpha.4 验证）；
 9. 品牌/主题令牌占位与测试字体策略；
 10. CI 基线：Linux 单元 + 格式 + 构建，Windows 构建，Android 构建。
 
@@ -67,8 +67,8 @@
 - [ ] 至少一台真实 Android 笔设备完成压感/掌拒/延迟记录；
 - [ ] 20k 笔迹场景有可复现基准与结论；
 - [ ] `.meowo` 最小 schema 可创建、保存、重开、迁移、恢复；
-- [ ] PDFium 最小渲染 demo 可运行并记录许可证/体积；
-- [ ] EPUB 路线有书面结论（采用/延期/购买/自研），并更新 OQ-001；
+- [x] MuPDF 在 Linux 与 Android 完成最小渲染并记录体积；许可证/源码提供方案仍待发布前完成；
+- [x] EPUB 路线已确定为 MuPDF 固定页快照（D-020）；
 - [ ] 关键架构决策无未记录的偏离；
 - [ ] Phase 1 计划已按验证结果修订。
 
