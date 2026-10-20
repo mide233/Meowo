@@ -1216,6 +1216,7 @@ class MeowoCanvasPainter extends CustomPainter {
     required this.images,
     this.vectors = const <String, BookVectorPage>{},
     this.paintBackground = true,
+    this.overlayOnly = false,
     required this.inProgress,
     required this.inProgressPressures,
     required this.inProgressColor,
@@ -1242,6 +1243,11 @@ class MeowoCanvasPainter extends CustomPainter {
   /// [BookBackgroundPainter] so ink strokes do not replay it. Export and
   /// thumbnail rendering keep it in this painter.
   final bool paintBackground;
+
+  /// True while rendering the raster overlay for vector PDF export: paper and
+  /// ink are left to C++/MuPDF so only text, images and attachment icons are
+  /// encoded into the PNG.
+  final bool overlayOnly;
   final List<Offset> inProgress;
   final List<double> inProgressPressures;
   final Color inProgressColor;
@@ -1275,8 +1281,10 @@ class MeowoCanvasPainter extends CustomPainter {
       );
     }
     _paintBodyAndLayers(canvas);
-    _paintInProgress(canvas);
-    _paintSelection(canvas);
+    if (!overlayOnly) {
+      _paintInProgress(canvas);
+      _paintSelection(canvas);
+    }
     canvas.restore();
   }
 
@@ -1464,6 +1472,7 @@ class MeowoCanvasPainter extends CustomPainter {
     Map<String, dynamic> element,
     double opacity,
   ) {
+    if (overlayOnly && element['type'] == 'stroke') return;
     switch (element['type']) {
       case 'stroke':
         final raw = element['points'] as List? ?? const [];
@@ -1743,6 +1752,57 @@ Future<Uint8List> renderInfiniteCanvasPng({
   try {
     final data = await image.toByteData(format: ui.ImageByteFormat.png);
     if (data == null) throw StateError('画布渲染失败');
+    return data.buffer.asUint8List();
+  } finally {
+    image.dispose();
+    picture.dispose();
+  }
+}
+
+/// Renders only the raster layers of a book page (text boxes, Markdown text,
+/// images and attachment icons) on a transparent background. Ink, highlighter
+/// and the source page stay vector and are written by the C++ PDF exporter.
+///
+/// The default 300 DPI target is ~4.17 px/pt. Very large pages are capped by
+/// [maxSide] and [maxPixels] so export cannot exhaust memory.
+Future<Uint8List> renderBookOverlayPng({
+  required Map<String, dynamic> document,
+  required Map<String, dynamic> page,
+  required Map<String, ui.Image> images,
+  double dpi = 300.0,
+  double maxSide = 8192,
+  double maxPixels = 32000000,
+}) async {
+  final width = (page['width'] as num?)?.toDouble() ?? 595.276;
+  final height = (page['height'] as num?)?.toDouble() ?? 841.89;
+  var ratio = dpi / 72.0;
+  ratio = math.min(ratio, maxSide / width);
+  ratio = math.min(ratio, maxSide / height);
+  ratio = math.min(ratio, math.sqrt(maxPixels / (width * height)));
+  ratio = math.max(0.000001, ratio);
+  final pixelWidth = math.max(1, (width * ratio).round());
+  final pixelHeight = math.max(1, (height * ratio).round());
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.scale(ratio);
+  MeowoCanvasPainter(
+    document: document,
+    page: page,
+    scale: 1,
+    images: images,
+    paintBackground: false,
+    overlayOnly: true,
+    inProgress: const <Offset>[],
+    inProgressPressures: const <double>[],
+    inProgressColor: const Color(0xFF222222),
+    inProgressWidth: 1,
+    inProgressHighlighter: false,
+  ).paint(canvas, Size(width, height));
+  final picture = recorder.endRecording();
+  final image = await picture.toImage(pixelWidth, pixelHeight);
+  try {
+    final data = await image.toByteData(format: ui.ImageByteFormat.png);
+    if (data == null) throw StateError('页面叠加层渲染失败');
     return data.buffer.asUint8List();
   } finally {
     image.dispose();

@@ -21,6 +21,7 @@ import 'image_edit_dialog.dart';
 import 'ink_ops.dart';
 import 'page_thumbnail.dart';
 import 'page_turn.dart';
+import 'pdf_export.dart';
 import 'pressure_curve_dialog.dart';
 
 enum _SaveState { saved, saving, failed }
@@ -1278,6 +1279,438 @@ class _EditorPageState extends State<EditorPage> {
   Future<void> _exportPdf() async {
     final doc = _doc;
     if (doc == null) return;
+    if (doc['kind'] == 'book') {
+      await _exportBookPdf(doc);
+      return;
+    }
+    await _exportRasterPdf(doc);
+  }
+
+  Future<List<int>?> _chooseBookPdfRange(int pageCount) async {
+    if (pageCount <= 1) return const [0];
+    var mode = 'all';
+    final controller = TextEditingController();
+    String? error;
+    final selected = await showDialog<List<int>>(
+      context: context,
+      builder: (dialogContext) => StatefulBuilder(
+        builder: (dialogContext, setState) {
+          List<int>? resolve() {
+            switch (mode) {
+              case 'current':
+                return [_pageIndex.clamp(0, pageCount - 1)];
+              case 'custom':
+                return parsePageRange(controller.text, pageCount);
+              default:
+                return List<int>.generate(pageCount, (index) => index);
+            }
+          }
+
+          return AlertDialog(
+            title: const Text('导出 PDF'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text('默认导出整本书；可按当前页序选择当前页或自定义页码范围。'),
+                  Wrap(
+                    spacing: 8,
+                    runSpacing: 4,
+                    children: [
+                      ChoiceChip(
+                        label: Text('全部（$pageCount 页）'),
+                        selected: mode == 'all',
+                        onSelected: (_) => setState(() => mode = 'all'),
+                      ),
+                      ChoiceChip(
+                        label: Text('当前页（${_pageIndex + 1}）'),
+                        selected: mode == 'current',
+                        onSelected: (_) => setState(() => mode = 'current'),
+                      ),
+                      ChoiceChip(
+                        label: const Text('自定义范围'),
+                        selected: mode == 'custom',
+                        onSelected: (_) => setState(() => mode = 'custom'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  if (mode == 'custom')
+                    TextField(
+                      controller: controller,
+                      decoration: InputDecoration(
+                        hintText: '例如 1-3, 5, 8-9',
+                        errorText: error,
+                      ),
+                      onChanged: (_) {
+                        if (error != null) setState(() => error = null);
+                      },
+                    ),
+                  if (mode != 'custom' && error != null)
+                    Text(
+                      error!,
+                      style: TextStyle(
+                        color: Theme.of(dialogContext).colorScheme.error,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(dialogContext),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () {
+                  try {
+                    Navigator.pop(dialogContext, resolve());
+                  } on FormatException catch (e) {
+                    setState(() => error = e.message);
+                  }
+                },
+                child: const Text('导出'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+    controller.dispose();
+    return selected;
+  }
+
+  Future<void> _exportBookPdf(Map<String, dynamic> doc) async {
+    await _flushSave();
+    if (_saveState == _SaveState.failed) {
+      _message('保存失败，尚未开始导出', error: true);
+      return;
+    }
+    final pages = doc['pages'] as List? ?? const [];
+    final indexes = await _chooseBookPdfRange(pages.length);
+    if (indexes == null) return;
+
+    final fileName = annotatedPdfFileName(
+      doc['title'] as String? ?? '未命名',
+      DateTime.now(),
+    );
+    final location = await getSaveLocation(suggestedName: fileName);
+    if (location == null) return;
+
+    final target = File(location.path);
+    if (await target.exists()) {
+      if (!mounted) return;
+      final overwrite = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('文件已存在'),
+          content: SelectableText('目标位置已有同名文件：\n${location.path}\n\n是否覆盖？'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('覆盖'),
+            ),
+          ],
+        ),
+      );
+      if (overwrite != true) return;
+    }
+
+    final estimate = estimatePdfExport(doc, indexes);
+    if (estimate.warns) {
+      if (!mounted) return;
+      final proceed = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) => AlertDialog(
+          title: const Text('导出可能较慢或较大'),
+          content: Text(
+            '预计文件约 ${formatBytes(estimate.estimatedBytes)}，'
+            '预计耗时约 ${_formatDuration(estimate.estimatedSeconds)}。\n\n'
+            '这是估算值；仍可继续导出。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(dialogContext, false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.pop(dialogContext, true),
+              child: const Text('继续导出'),
+            ),
+          ],
+        ),
+      );
+      if (proceed != true) return;
+    }
+
+    if (!mounted) return;
+    final temp = await Directory.systemTemp.createTemp('meowo-pdf-export-');
+    final progressPath = '${temp.path}/progress.json';
+    final cancelPath = '${temp.path}/cancel.flag';
+    final progress = ValueNotifier<PdfExportProgress>(
+      PdfExportProgress(
+        phase: 'preparing',
+        completed: 0,
+        total: indexes.length,
+      ),
+    );
+    final cancelling = ValueNotifier<bool>(false);
+    var cancelRequested = false;
+    final prepWarnings = <String>[];
+    if (!mounted) {
+      try {
+        await temp.delete(recursive: true);
+      } catch (_) {
+        // Nothing to show; the temp directory is best-effort cleanup.
+      }
+      return;
+    }
+    final contextReady = Completer<BuildContext>();
+    final dialogFuture = showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (dialogContext) {
+        if (!contextReady.isCompleted) contextReady.complete(dialogContext);
+        return AlertDialog(
+          title: const Text('正在导出 PDF'),
+          content: ValueListenableBuilder<PdfExportProgress>(
+            valueListenable: progress,
+            builder: (context, value, _) {
+              final phase = switch (value.phase) {
+                'preparing' => '正在渲染文字、图片与附件图标…',
+                'cancelling' => '正在取消…',
+                'saving' => '正在保存 PDF…',
+                'done' => '正在完成…',
+                _ => '正在写入矢量页面…',
+              };
+              return Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(phase),
+                  const SizedBox(height: 12),
+                  LinearProgressIndicator(value: value.fraction),
+                  const SizedBox(height: 8),
+                  Text('${value.completed} / ${value.total} 页'),
+                ],
+              );
+            },
+          ),
+          actions: [
+            ValueListenableBuilder<bool>(
+              valueListenable: cancelling,
+              builder: (context, value, _) => TextButton(
+                onPressed: value
+                    ? null
+                    : () async {
+                        cancelling.value = true;
+                        cancelRequested = true;
+                        try {
+                          await File(cancelPath).writeAsString('1');
+                        } catch (_) {
+                          // The file protocol is best-effort; the flag still
+                          // stops overlay preparation on the UI side.
+                        }
+                        progress.value = PdfExportProgress(
+                          phase: 'cancelling',
+                          completed: progress.value.completed,
+                          total: progress.value.total,
+                        );
+                      },
+                child: Text(value ? '正在取消…' : '取消'),
+              ),
+            ),
+          ],
+        );
+      },
+    );
+    final dialogContext = await contextReady.future;
+    Timer? poll;
+    Map<String, dynamic>? report;
+    try {
+      for (var i = 0; i < indexes.length; i++) {
+        if (cancelRequested) break;
+        final index = indexes[i];
+        final page = Map<String, dynamic>.from(pages[index] as Map);
+        if (pageHasRasterOverlay(page)) {
+          var images = <String, ui.Image>{};
+          try {
+            images = await _loadRasterImagesForPage(page);
+            final png = await renderBookOverlayPng(
+              document: doc,
+              page: page,
+              images: images,
+            );
+            await File('${temp.path}/overlay-$index.png')
+                .writeAsBytes(png, flush: true);
+          } catch (error) {
+            prepWarnings.add('第 ${index + 1} 页叠加层渲染失败: $error');
+          } finally {
+            for (final image in images.values) {
+              image.dispose();
+            }
+          }
+        }
+        progress.value = PdfExportProgress(
+          phase: 'preparing',
+          completed: i + 1,
+          total: indexes.length,
+          pageNumber: i + 1,
+        );
+      }
+      if (cancelRequested) {
+        _message('已取消 PDF 导出');
+        return;
+      }
+      poll = Timer.periodic(const Duration(milliseconds: 200), (_) async {
+        try {
+          final file = File(progressPath);
+          if (!await file.exists()) return;
+          final decoded = jsonDecode(await file.readAsString());
+          if (decoded is Map) {
+            progress.value = PdfExportProgress.fromJson(
+              Map<String, dynamic>.from(decoded),
+            );
+          }
+        } catch (_) {
+          // A partially written progress file is simply retried next tick.
+        }
+      });
+      final result = await state.exportBookPdf(
+        documentId: doc['id'] as String,
+        targetPath: location.path,
+        pageIndexes: indexes,
+        overlayDir: temp.path,
+        progressPath: progressPath,
+        cancelPath: cancelPath,
+        overwrite: true,
+      );
+      poll.cancel();
+      if (result['cancelled'] == true) {
+        _message('已取消 PDF 导出');
+        return;
+      }
+      if (prepWarnings.isNotEmpty) {
+        final warnings = [
+          ...(result['warnings'] as List? ?? const []),
+          ...prepWarnings,
+        ];
+        result['warnings'] = warnings;
+      }
+      report = result;
+    } catch (error) {
+      _message('PDF 导出失败: $error', error: true);
+    } finally {
+      poll?.cancel();
+      if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+      await dialogFuture;
+      cancelling.dispose();
+      progress.dispose();
+      try {
+        await temp.delete(recursive: true);
+      } catch (_) {
+        // Best-effort cleanup; the OS will reclaim the temp directory.
+      }
+    }
+    if (report != null) {
+      await _showPdfExportReport(report, location.path);
+    }
+  }
+
+  String _formatDuration(double seconds) {
+    if (seconds < 60) return '${seconds.ceil()} 秒';
+    return '${(seconds / 60).toStringAsFixed(1)} 分钟';
+  }
+
+  Future<Map<String, ui.Image>> _loadRasterImagesForPage(
+    Map<String, dynamic> page,
+  ) async {
+    final ids = <String>{};
+    for (final value in page['layers'] as List? ?? const []) {
+      final layer = value as Map;
+      if (layer['visible'] == false) continue;
+      for (final elementValue in layer['elements'] as List? ?? const []) {
+        final element = elementValue as Map;
+        if (element['type'] != 'image') continue;
+        final id = element['assetId'] as String?;
+        if (id != null) ids.add(id);
+      }
+    }
+    final images = <String, ui.Image>{};
+    for (final id in ids) {
+      try {
+        final asset = await state.getAsset(_doc!['id'] as String, id);
+        final bytes = base64Decode(asset['base64'] as String);
+        images[id] = await _decodeImage(bytes);
+      } catch (_) {
+        // The canvas painter draws a readable placeholder for missing images.
+      }
+    }
+    return images;
+  }
+
+  Future<void> _showPdfExportReport(
+    Map<String, dynamic> result,
+    String path,
+  ) async {
+    if (!mounted) return;
+    final exported = (result['exportedPages'] as List? ?? const [])
+        .whereType<num>()
+        .map((value) => value.toInt())
+        .toList();
+    final fallbacks = (result['fallbackPages'] as List? ?? const [])
+        .whereType<Map>()
+        .map((value) => Map<String, dynamic>.from(value))
+        .toList();
+    final warnings = (result['warnings'] as List? ?? const [])
+        .whereType<String>()
+        .toList();
+    await showDialog<void>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('PDF 导出完成'),
+        content: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('保存位置'),
+              SelectableText(path),
+              const SizedBox(height: 12),
+              Text('已导出页面: ${compactPageRanges(exported)}'),
+              if (fallbacks.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text('PNG 回退页面（${fallbacks.length}）:'),
+                for (final fallback in fallbacks)
+                  Text(
+                    '第 ${fallback['pageNumber']} 页 · '
+                    '${fallbackReasonLabel(fallback['reason'] as String? ?? '')}',
+                  ),
+              ],
+              if (warnings.isNotEmpty) ...[
+                const SizedBox(height: 12),
+                Text('警告（${warnings.length}）:'),
+                for (final warning in warnings) Text('• $warning'),
+              ],
+            ],
+          ),
+        ),
+        actions: [
+          FilledButton(
+            onPressed: () => Navigator.pop(dialogContext),
+            child: const Text('完成'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _exportRasterPdf(Map<String, dynamic> doc) async {
     final pages = doc['pages'] as List;
     final allPages = doc['kind'] != 'infinite' && pages.length > 1;
     bool exportAll = false;

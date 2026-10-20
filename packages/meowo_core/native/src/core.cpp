@@ -1,6 +1,9 @@
 #include "meowo_core.h"
 
 #include "mupdf_import.h"
+#ifdef MEOWO_HAS_MUPDF
+#include "mupdf_export.h"
+#endif
 
 #include <iomanip>
 #include <nlohmann/json.hpp>
@@ -22,6 +25,7 @@
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
 #include <mutex>
@@ -520,6 +524,100 @@ std::string title_from_path(const fs::path& path) {
   return name;
 }
 
+#ifdef MEOWO_HAS_MUPDF
+uint32_t parse_rgb_color(const std::string& value) {
+  std::string cleaned;
+  cleaned.reserve(value.size());
+  for (char c : value) {
+    if (c != '#') cleaned.push_back(c);
+  }
+  if (cleaned.size() == 8) cleaned = cleaned.substr(2);
+  if (cleaned.size() != 6) return 0x222222;
+  uint32_t result = 0;
+  for (char c : cleaned) {
+    result <<= 4;
+    if (c >= '0' && c <= '9') {
+      result |= static_cast<uint32_t>(c - '0');
+    } else if (c >= 'a' && c <= 'f') {
+      result |= static_cast<uint32_t>(c - 'a' + 10);
+    } else if (c >= 'A' && c <= 'F') {
+      result |= static_cast<uint32_t>(c - 'A' + 10);
+    } else {
+      return 0x222222;
+    }
+  }
+  return result;
+}
+
+std::vector<std::pair<double, double>> pressure_curve_for(const json& doc,
+                                                          bool highlighter) {
+  std::vector<std::pair<double, double>> curve;
+  const json settings = doc.value("brushSettings", json::object());
+  if (settings.is_object()) {
+    const json brush = settings.value(highlighter ? "highlighter" : "pen",
+                                      json::object());
+    if (brush.is_object() && brush.contains("curve") &&
+        brush["curve"].is_array()) {
+      for (const auto& value : brush["curve"]) {
+        if (!value.is_array() || value.size() < 2) continue;
+        if (!value[0].is_number() || !value[1].is_number()) continue;
+        curve.emplace_back(std::clamp(value[0].get<double>(), 0.0, 1.0),
+                           std::clamp(value[1].get<double>(), 0.0, 1.0));
+      }
+    }
+  }
+  if (curve.size() < 2) {
+    return {{0.0, 0.0}, {0.25, 0.25}, {0.5, 0.5}, {0.75, 0.75}, {1.0, 1.0}};
+  }
+  std::sort(curve.begin(), curve.end(),
+            [](const auto& a, const auto& b) { return a.first < b.first; });
+  curve.front().first = 0.0;
+  curve.back().first = 1.0;
+  return curve;
+}
+
+std::vector<ExportStroke> visible_strokes(const json& doc, const json& page) {
+  std::vector<ExportStroke> strokes;
+  for (const auto& layer_value : page.value("layers", json::array())) {
+    if (!layer_value.is_object()) continue;
+    const json& layer = layer_value;
+    if (layer.value("visible", true) == false) continue;
+    const double layer_opacity = layer.value("opacity", 1.0);
+    if (layer_opacity <= 0.01) continue;
+    for (const auto& element : layer.value("elements", json::array())) {
+      if (!element.is_object() || element.value("type", "") != "stroke") {
+        continue;
+      }
+      ExportStroke stroke;
+      stroke.highlighter = element.value("highlighter", false);
+      stroke.rgb = parse_rgb_color(element.value("color", "#222222"));
+      stroke.width = element.value("width", 2.0);
+      stroke.opacity =
+          layer_opacity * element.value("opacity", 1.0);
+      stroke.pressureCurve = pressure_curve_for(doc, stroke.highlighter);
+      for (const auto& point : element.value("points", json::array())) {
+        if (!point.is_array() || point.size() < 2) continue;
+        if (!point[0].is_number() || !point[1].is_number()) continue;
+        ExportStrokePoint parsed;
+        parsed.x = point[0].get<double>();
+        parsed.y = point[1].get<double>();
+        parsed.pressure =
+            point.size() > 2 && point[2].is_number() ? point[2].get<double>() : 1.0;
+        if (!std::isfinite(parsed.x) || !std::isfinite(parsed.y) ||
+            !std::isfinite(parsed.pressure)) {
+          continue;
+        }
+        stroke.points.push_back(parsed);
+      }
+      if (!stroke.points.empty() && stroke.width > 0) {
+        strokes.push_back(std::move(stroke));
+      }
+    }
+  }
+  return strokes;
+}
+#endif
+
 std::string searchable_text(const json& doc) {
   std::string text = doc.value("title", "");
   text.push_back('\n');
@@ -602,6 +700,7 @@ class Workspace {
     if (op == "import_pdf_pages") return import_pdf_pages(request);
     if (op == "render_book_pages_svg") return render_book_pages_svg(request);
     if (op == "export_document") return export_document(request);
+    if (op == "export_book_pdf") return export_book_pdf(request);
     if (op == "statistics") return statistics();
     throw CoreError("未知操作: " + op);
   }
@@ -1324,6 +1423,230 @@ class Workspace {
       }
     }
     return json{{"pages", pages}, {"failures", failures}};
+  }
+
+  json export_book_pdf(const json& request) {
+#ifndef MEOWO_HAS_MUPDF
+    (void)request;
+    throw CoreError("当前构建未启用 MuPDF，无法导出矢量 PDF");
+#else
+    const std::string doc_id = request.value("documentId", "");
+    if (!safe_id(doc_id)) throw CoreError("文档 ID 非法");
+    const std::string target = request.value("targetPath", "");
+    if (target.empty()) throw CoreError("缺少导出路径");
+    const fs::path target_path(target);
+    const bool overwrite = request.value("overwrite", false);
+    std::error_code exists_ec;
+    if (fs::exists(target_path, exists_ec) && !overwrite) {
+      throw CoreError("目标文件已存在，需要显式确认覆盖");
+    }
+
+    const fs::path document_file = document_path(root_, doc_id);
+    const json doc = load_document_payload(document_file);
+    if (doc.value("kind", "") != "book") {
+      throw CoreError("只有喵书籍支持矢量 PDF 导出");
+    }
+    const json pages = doc.value("pages", json::array());
+    if (pages.empty()) throw CoreError("文档没有页面");
+
+    std::vector<int> indexes;
+    if (request.contains("pageIndexes")) {
+      if (!request["pageIndexes"].is_array()) throw CoreError("页面列表无效");
+      for (const auto& value : request["pageIndexes"]) {
+        if (!value.is_number_integer()) throw CoreError("页面序号无效");
+        const int index = value.get<int>();
+        if (index < 0 || index >= static_cast<int>(pages.size())) {
+          throw CoreError("页面序号超出范围");
+        }
+        if (std::find(indexes.begin(), indexes.end(), index) != indexes.end()) {
+          throw CoreError("页面序号重复");
+        }
+        indexes.push_back(index);
+      }
+    } else {
+      indexes.resize(pages.size());
+      for (size_t i = 0; i < pages.size(); ++i) indexes[i] = static_cast<int>(i);
+    }
+    if (indexes.empty()) throw CoreError("没有可导出的页面");
+    if (indexes.size() > 500) throw CoreError("单次最多导出 500 页");
+
+    bool needs_source = false;
+    for (const int index : indexes) {
+      if (pages[static_cast<size_t>(index)].value("isNotePage", false) != true) {
+        needs_source = true;
+        break;
+      }
+    }
+
+    const json source = doc.value("bookSource", json::object());
+    const std::string source_mime =
+        source.is_object() ? source.value("mime", "") : "";
+    const std::string source_asset_id =
+        source.is_object() ? source.value("assetId", "") : "";
+    const int source_page_count =
+        source.is_object() ? source.value("pageCount", 0) : 0;
+    bool source_encrypted =
+        source.is_object() && source.value("encrypted", false);
+
+    std::string source_pdf;
+    std::string force_reason;
+    std::string force_detail;
+    if (!source.is_object() || source_asset_id.empty()) {
+      force_reason = "missing_book_source";
+      force_detail = "旧文档没有可用的原始 PDF；重新导入后可获得矢量导出";
+    } else if (source_mime == "application/epub+zip") {
+      force_reason = "epub_fixed_page";
+      force_detail = "EPUB 固定页仅保留导入时的 PNG 快照";
+    } else if (source_mime != "application/pdf") {
+      force_reason = "source_not_pdf";
+      force_detail = "书籍源不是 PDF";
+    } else if (source_encrypted) {
+      force_reason = "encrypted_pdf_no_password";
+      force_detail = "加密 PDF 的密码不会保存；请重新导入并在导出前解除密码保护";
+    } else if (needs_source) {
+      try {
+        source_pdf = read_asset_bytes(document_file, source_asset_id);
+      } catch (const std::exception& e) {
+        force_reason = "missing_book_source";
+        force_detail = e.what();
+      }
+      if (source_pdf.empty() && force_reason.empty()) {
+        force_reason = "missing_book_source";
+        force_detail = "原始 PDF 资产为空";
+      }
+    }
+
+    const std::string overlay_dir = request.value("overlayDir", "");
+    const std::string progress_path = request.value("progressPath", "");
+    const std::string cancel_path = request.value("cancelPath", "");
+    if (!progress_path.empty()) ensure_dir(fs::path(progress_path).parent_path());
+
+    BookExportRequest export_request;
+    export_request.sourcePdf = std::move(source_pdf);
+    export_request.sourceEncrypted = source_encrypted;
+    export_request.progressPath = progress_path;
+    export_request.cancelPath = cancel_path;
+    export_request.pages.reserve(indexes.size());
+
+    const json paper = doc.value("paper", json::object());
+    for (size_t output_index = 0; output_index < indexes.size();
+         ++output_index) {
+      const int document_index = indexes[output_index];
+      const json& page = pages[static_cast<size_t>(document_index)];
+      if (!page.is_object()) throw CoreError("页面数据无效");
+      BookExportPage export_page;
+      export_page.pageNumber = static_cast<int>(output_index) + 1;
+      export_page.documentPageIndex = document_index;
+      export_page.notePage = page.value("isNotePage", false);
+      export_page.width = page.value("width", 0.0);
+      export_page.height = page.value("height", 0.0);
+      if (export_page.width <= 0) export_page.width = 595.276;
+      if (export_page.height <= 0) export_page.height = 841.89;
+      if (export_page.notePage) {
+        // Inserted note pages use the book paper size, not the current source
+        // page size (mixed-size PDFs must not leak their dimensions).
+        const double paper_width = paper.value("width", 0.0);
+        const double paper_height = paper.value("height", 0.0);
+        if (paper_width > 0) export_page.width = paper_width;
+        if (paper_height > 0) export_page.height = paper_height;
+      } else {
+        const int source_index = page.value("sourceIndex", -1);
+        export_page.sourceIndex = source_index;
+        if (source_index >= 0 &&
+            source_page_count > 0 && source_index >= source_page_count) {
+          export_page.forceFallback = true;
+          export_page.fallbackReason = "source_page_out_of_range";
+          export_page.fallbackDetail = "源页面索引超出 PDF 页数";
+        }
+      }
+      if (!export_page.notePage && !force_reason.empty()) {
+        export_page.forceFallback = true;
+        export_page.fallbackReason = force_reason;
+        export_page.fallbackDetail = force_detail;
+      }
+      if (!export_page.notePage && export_page.sourceIndex < 0 &&
+          !export_page.forceFallback) {
+        export_page.forceFallback = true;
+        export_page.fallbackReason = "missing_source_index";
+        export_page.fallbackDetail = "页面没有源 PDF 索引";
+      }
+      const std::string fallback_asset = page.value("sourceAssetId", "");
+      if (!fallback_asset.empty()) {
+        export_page.loadFallbackPng = [document_file, fallback_asset]() {
+          return read_asset_bytes(document_file, fallback_asset);
+        };
+      }
+      if (!overlay_dir.empty()) {
+        const fs::path overlay = fs::path(overlay_dir) /
+                                 ("overlay-" + std::to_string(document_index) +
+                                  ".png");
+        std::error_code overlay_ec;
+        if (fs::exists(overlay, overlay_ec)) {
+          export_page.overlayPath = overlay.string();
+        }
+      }
+      export_page.strokes = visible_strokes(doc, page);
+      export_request.pages.push_back(std::move(export_page));
+    }
+
+    ensure_dir(target_path.parent_path());
+    const fs::path temp =
+        target_path.parent_path() /
+        (target_path.filename().string() + ".part-" + random_hex(6));
+    export_request.targetPath = temp.string();
+    BookExportResult result;
+    try {
+      result = build_book_pdf(export_request);
+    } catch (const std::exception& e) {
+      std::error_code ec;
+      fs::remove(temp, ec);
+      throw CoreError(std::string("PDF 导出失败: ") + e.what());
+    }
+    if (result.cancelled) {
+      std::error_code ec;
+      fs::remove(temp, ec);
+      return json{{"cancelled", true},
+                  {"exportedPages", result.exportedPages},
+                  {"vectorPages", result.vectorPages},
+                  {"fallbackPages", json::array()}};
+    }
+    if (!result.ok) {
+      std::error_code ec;
+      fs::remove(temp, ec);
+      throw CoreError(result.error.empty() ? "PDF 导出失败" : result.error);
+    }
+    std::error_code ec;
+    if (fs::exists(target_path, ec)) {
+      if (!overwrite) {
+        fs::remove(temp, ec);
+        throw CoreError("目标文件已存在，需要显式确认覆盖");
+      }
+      fs::remove(target_path, ec);
+      if (ec) {
+        fs::remove(temp, ec);
+        throw CoreError("无法覆盖目标文件: " + ec.message());
+      }
+    }
+    fs::rename(temp, target_path, ec);
+    if (ec) {
+      fs::remove(temp, ec);
+      throw CoreError("无法保存 PDF: " + ec.message());
+    }
+
+    json fallbacks = json::array();
+    for (const auto& page : result.fallbackPages) {
+      fallbacks.push_back(json{{"pageNumber", page.pageNumber},
+                               {"reason", page.reason},
+                               {"detail", page.detail}});
+    }
+    return json{{"path", target_path.string()},
+                {"exportedPages", result.exportedPages},
+                {"vectorPages", result.vectorPages},
+                {"fallbackPages", fallbacks},
+                {"warnings", result.warnings},
+                {"bytes", result.outputBytes},
+                {"cancelled", false}};
+#endif
   }
 
   json export_document(const json& request) {

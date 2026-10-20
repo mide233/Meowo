@@ -275,6 +275,38 @@ class AppState extends ChangeNotifier {
     return result['path'] as String;
   }
 
+  /// Runs the vector PDF exporter in a worker isolate. The worker only reads
+  /// the document and its assets; all UI/overlay rasterization happens before
+  /// this call. Progress/cancel are exchanged through files because the C ABI
+  /// is synchronous.
+  Future<Map<String, dynamic>> exportBookPdf({
+    required String documentId,
+    required String targetPath,
+    required List<int> pageIndexes,
+    required String overlayDir,
+    required String progressPath,
+    required String cancelPath,
+    bool overwrite = true,
+  }) async {
+    final root = libraryRoot;
+    return Isolate.run(() async {
+      final worker = await MeowoCore.open(root, acquireLock: false);
+      try {
+        return worker.call('export_book_pdf', {
+          'documentId': documentId,
+          'targetPath': targetPath,
+          'pageIndexes': pageIndexes,
+          'overlayDir': overlayDir,
+          'progressPath': progressPath,
+          'cancelPath': cancelPath,
+          'overwrite': overwrite,
+        });
+      } finally {
+        worker.close();
+      }
+    });
+  }
+
   Future<Map<String, dynamic>> addAsset(
     String documentId,
     String path,

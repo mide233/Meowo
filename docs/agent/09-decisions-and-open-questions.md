@@ -276,6 +276,14 @@
 - 影响：`03` 文件锁、`12` 第二实例语义、启动错误 UX；与 Q-120 的“只读视图 + 另存副本”存在已知偏差，发布前必须补齐或明确降级。
 - 验证：`Core.RejectsConcurrentWorkspaceOpen` 覆盖首开成功、二次拒绝、关闭后可重开。
 
+### D-033 · 喵书籍 PDF 导出采用压平矢量 + 透明栅格叠加
+
+- 状态：`Accepted`（2026-10-20；实现见 `plans/pdf-vector-export.md`）
+- 决策：`export_book_pdf` 用 MuPDF PDF writer 重建源页：保留 MediaBox/CropBox/Rotate/UserUnit，源内容经文本轮廓化设备重放为路径与图像（不保留可选中文字层、不复制源注释）；笔迹/荧光笔写成 PDF 路径（荧光笔 multiply + 0.32 alpha）。Dart 仅把文本框/Markdown/图片/附件图标渲染为约 300 DPI 透明 PNG，C++ 叠到同一页；附件内容不嵌入。插入笔记页使用书籍纸张尺寸；逐页失败回退已有 PNG 并报告，不中止整本。
+- 理由：C++ 不能渲染 Flutter 文本/图标，源页与笔迹又必须保持矢量；按层拆分可同时满足保真、体积与无文字层要求。
+- 限制：栅格叠加层统一位于该页矢量笔迹之上；同一图层内笔迹与文本/图片的交错 z 序不保证完全复现。取消按页生效，单页处理与最终 `pdf_save_document` 不可中断。
+- 影响：`03` 导出、`04` 导出 UX、`12` §7/§9；旧文档缺少 `book_source` 或加密 PDF 只能 PNG 回退。
+
 ---
 
 ## 2. 待确认问题（Open Questions）

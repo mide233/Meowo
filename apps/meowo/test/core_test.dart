@@ -91,6 +91,61 @@ void main() {
     expect(svg, isNot(contains('xlink:href="#font_')));
   });
 
+  test('vector PDF export returns page and fallback reports', () async {
+    final root = Directory.systemTemp.createTempSync('meowo-pdf-export-test-');
+    final core = await MeowoCore.open(root.path);
+    addTearDown(core.close);
+    addTearDown(() => root.deleteSync(recursive: true));
+    final pdf = File('${root.path}/book.pdf');
+    final result = await Process.run('python3', [
+      '-c',
+      'from PIL import Image; '
+          'im1=Image.new("RGB",(300,400),"white"); im2=Image.new("RGB",(500,300),"white"); '
+          'im1.save(r"${pdf.path}", save_all=True, append_images=[im2])',
+    ]);
+    expect(result.exitCode, 0, reason: result.stderr.toString());
+    final imported = core.call('import_pdf', {'sourcePath': pdf.path});
+    final out = '${root.path}/annotated.pdf';
+    final exported = core.call('export_book_pdf', {
+      'documentId': imported['id'],
+      'targetPath': out,
+      'pageIndexes': [1],
+    });
+    expect(exported['exportedPages'], [1]);
+    expect(exported['vectorPages'], [1]);
+    expect(exported['fallbackPages'], isEmpty);
+    expect(File(out).existsSync(), isTrue);
+    expect(File(out).readAsBytesSync().take(4), [0x25, 0x50, 0x44, 0x46]);
+
+    final fallbackRoot = Directory.systemTemp.createTempSync(
+      'meowo-pdf-fallback-test-',
+    );
+    final fallbackCore = await MeowoCore.open(fallbackRoot.path);
+    addTearDown(fallbackCore.close);
+    addTearDown(() => fallbackRoot.deleteSync(recursive: true));
+    final png = File('${fallbackRoot.path}/page.png');
+    png.writeAsBytesSync(
+      base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGP4//8/AAX+Av4N70a4AAAAAElFTkSuQmCC',
+      ),
+    );
+    final raster = fallbackCore.call('import_pdf_pages', {
+      'title': 'raster',
+      'pages': [
+        {'path': png.path, 'width': 300, 'height': 400},
+      ],
+    });
+    final fallbackOut = '${fallbackRoot.path}/fallback.pdf';
+    final fallback = fallbackCore.call('export_book_pdf', {
+      'documentId': raster['id'],
+      'targetPath': fallbackOut,
+      'pageIndexes': [0],
+    });
+    expect(fallback['vectorPages'], isEmpty);
+    expect(fallback['fallbackPages'], hasLength(1));
+    expect(fallback['fallbackPages'].first['reason'], 'missing_book_source');
+  });
+
   test('encrypted PDF keeps PNG pages and never advertises vectors', () async {
     final ghostscript = await Process.run('which', ['gs']);
     if (ghostscript.exitCode != 0) {
@@ -144,6 +199,18 @@ void main() {
         'pageIndexes': [0],
       }),
       throwsA(isA<MeowoException>()),
+    );
+
+    final exported = core.call('export_book_pdf', {
+      'documentId': doc['id'],
+      'targetPath': '${root.path}/encrypted-out.pdf',
+      'pageIndexes': [0],
+    });
+    expect(exported['vectorPages'], isEmpty);
+    expect(exported['fallbackPages'], hasLength(1));
+    expect(
+      exported['fallbackPages'].first['reason'],
+      'encrypted_pdf_no_password',
     );
   });
 
