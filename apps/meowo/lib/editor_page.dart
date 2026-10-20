@@ -14,6 +14,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'app_state.dart';
 import 'canvas_view.dart';
+import 'image_edit_dialog.dart';
 import 'ink_ops.dart';
 import 'pressure_curve_dialog.dart';
 
@@ -559,7 +560,13 @@ class _EditorPageState extends State<EditorPage> {
         'y': 80.0,
         'w': targetWidth,
         'h': targetHeight,
-        'rotation': 0.0,
+        'cropLeft': 0.0,
+        'cropTop': 0.0,
+        'cropRight': 1.0,
+        'cropBottom': 1.0,
+        'rotation': 0,
+        'flipH': false,
+        'flipV': false,
         'opacity': 1.0,
         'locked': false,
       });
@@ -625,7 +632,27 @@ class _EditorPageState extends State<EditorPage> {
       return;
     }
     if (element['type'] == 'image') {
-      _message('图片元素：${element['assetId']}');
+      final assetId = element['assetId'] as String?;
+      final image = assetId == null ? null : _images[assetId];
+      if (image == null) {
+        _message('图片尚未加载');
+        return;
+      }
+      final result = await showImageEditorDialog(
+        context,
+        image: image,
+        element: element,
+      );
+      if (result == null || !mounted) return;
+      _mutate(() {
+        element!['cropLeft'] = result.crop.left;
+        element['cropTop'] = result.crop.top;
+        element['cropRight'] = result.crop.right;
+        element['cropBottom'] = result.crop.bottom;
+        element['rotation'] = result.rotation;
+        element['flipH'] = result.flipH;
+        element['flipV'] = result.flipV;
+      });
     }
   }
 

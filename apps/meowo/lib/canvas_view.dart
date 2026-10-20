@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import 'image_ops.dart';
 import 'ink_ops.dart';
 
 class CanvasView extends StatefulWidget {
@@ -906,23 +907,16 @@ class MeowoCanvasPainter extends CustomPainter {
     final y = (element['y'] as num?)?.toDouble() ?? 0;
     final w = (element['w'] as num?)?.toDouble() ?? image.width.toDouble();
     final h = (element['h'] as num?)?.toDouble() ?? image.height.toDouble();
-    final rotation = (element['rotation'] as num?)?.toDouble() ?? 0;
-    canvas.save();
-    if (rotation != 0) {
-      final center = Offset(x + w / 2, y + h / 2);
-      canvas.translate(center.dx, center.dy);
-      canvas.rotate(rotation * math.pi / 180);
-      canvas.translate(-center.dx, -center.dy);
-    }
-    paintImage(
-      canvas: canvas,
-      rect: Rect.fromLTWH(x, y, w, h),
-      image: image,
-      fit: BoxFit.fill,
+    paintImageElementContent(
+      canvas,
+      Rect.fromLTWH(x, y, w, h),
+      image,
+      crop: normalizeImageCrop(element),
+      rotation: normalizeImageRotation(element['rotation']),
+      flipH: imageFlag(element, 'flipH'),
+      flipV: imageFlag(element, 'flipV'),
       opacity: opacity * ((element['opacity'] as num?)?.toDouble() ?? 1.0),
-      filterQuality: FilterQuality.medium,
     );
-    canvas.restore();
   }
 
   void _paintAttachment(

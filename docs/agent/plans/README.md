@@ -126,5 +126,9 @@
 | Phase 3 | 待创建 | — |
 | Phase 4 | 待创建 | — |
 | Phase 5 | 待创建 | — |
+| 专项 | [autonomous-1.0-execution.md](autonomous-1.0-execution.md) | Completed（Alpha 初版） |
+| 专项 | [mupdf-integration.md](mupdf-integration.md) | Completed（Alpha.4） |
+| 专项 | [workspace-lock.md](workspace-lock.md) | Completed（Alpha.5） |
+| 专项 | [image-editor.md](image-editor.md) | Completed（Alpha.6） |
 
 后续阶段计划必须基于上一阶段报告与验证结果编写，不能提前假装已知。
