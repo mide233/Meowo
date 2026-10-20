@@ -12,7 +12,7 @@
 - 笔迹与荧光笔写成 PDF 路径；荧光笔使用 `/BM /Multiply` 与 0.32×图层×元素透明度。
 - 文本框/Markdown、图片、附件图标由 Flutter 渲染为透明 PNG（目标 300 DPI，单边 ≤8192 px、总像素 ≤3200 万），C++ 作为整页图像 XObject 叠加；附件内容不嵌入。
 - 插入的 Meowo 笔记页使用书籍 `paper` 尺寸创建空白页，再写笔迹/叠加层；没有额外页边距。
-- 逐页回退到已有 `book_page` PNG：加密 PDF、EPUB 固定页、缺少 `book_source` 的旧文档、源页索引损坏、字形无法轮廓化或单页写入失败都只影响该页，不中止整本。
+- 逐页回退到已有 `book_page` PNG：加密 PDF、EPUB 固定页、缺少 `book_source` 的旧文档、源页索引损坏、字形无法轮廓化或单页写入失败都只影响该页，不中止整本。回退页按文档显示尺寸栅格化，旋转/裁切已烘焙进 PNG，视觉尺寸一致，但不再保留 PDF 级 CropBox/Rotate 元数据。
 - 导出报告返回并展示 `exportedPages`、`vectorPages`、`fallbackPages`（页码 + 原因 + 详情）与 `warnings`。
 
 ## 2. 关键实现

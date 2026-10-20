@@ -43,7 +43,7 @@ report dialog                  ◀──  - 写入笔迹/荧光笔 PDF 路径
   - 追加笔迹/荧光笔：在页面显示坐标写入 PDF 路径，外层 `cm = 逆页CTM × 页面缩放`；荧光笔使用 `/BM /Multiply` 与 `ca=0.32×layer×element`。
   - 追加 Dart 生成的透明 PNG：作为图像 XObject，按整页显示矩形放置。
 - 笔记页：按书籍 `paper.width/height` 创建空白页，写笔迹 + 叠加 PNG。
-- 回退页：按文档页显示尺寸创建页面，先绘已有 `book_page` PNG，再绘笔迹 + 叠加 PNG。
+- 回退页：按文档页显示尺寸创建页面，先绘已有 `book_page` PNG，再绘笔迹 + 叠加 PNG。旋转/裁切已烘焙进 PNG，视觉尺寸一致，但不保留 PDF 级 CropBox/Rotate 元数据。
 - 单页失败：丢弃未插入的页，改用回退路径；报告原因。
 - 输出先写临时文件，成功后由 `core.cpp` 原子改名到目标；失败/取消删除临时文件。
 
