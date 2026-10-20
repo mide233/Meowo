@@ -406,6 +406,17 @@ void save_asset(const fs::path& path, const std::string& id, const std::string& 
   tx.commit();
 }
 
+std::string read_asset_bytes(const fs::path& path, const std::string& id) {
+  Database db(path, SQLITE_OPEN_READONLY);
+  Statement stmt(db.get(), "SELECT bytes FROM assets WHERE id=?;");
+  stmt.bind_text(1, id);
+  if (!stmt.step_row()) throw CoreError("资源不存在: " + id);
+  const void* blob = sqlite3_column_blob(stmt.get(), 0);
+  const int n = sqlite3_column_bytes(stmt.get(), 0);
+  if (!blob || n <= 0) return {};
+  return std::string(static_cast<const char*>(blob), static_cast<size_t>(n));
+}
+
 json load_asset(const fs::path& path, const std::string& id) {
   Database db(path, SQLITE_OPEN_READONLY);
   Statement stmt(db.get(), "SELECT name, mime, size, bytes FROM assets WHERE id=?;");
@@ -589,6 +600,7 @@ class Workspace {
     if (op == "import_pdf") return import_pdf(request);
     if (op == "import_epub") return import_epub(request);
     if (op == "import_pdf_pages") return import_pdf_pages(request);
+    if (op == "render_book_pages_svg") return render_book_pages_svg(request);
     if (op == "export_document") return export_document(request);
     if (op == "statistics") return statistics();
     throw CoreError("未知操作: " + op);
@@ -1146,6 +1158,16 @@ class Workspace {
     const std::string source_mime =
         format == "epub" ? "application/epub+zip" : "application/pdf";
     const std::string source_bytes = read_file(source_path);
+
+    // Probe the first page before advertising vector pages. Encrypted PDFs are
+    // excluded because their password is never persisted, and EPUB stays on
+    // the fixed-layout PNG snapshot path.
+    bool vector_enabled = false;
+    if (format == "pdf" && !result.encrypted && !source_bytes.empty()) {
+      const auto probe = render_pdf_pages_svg(source_bytes, {0});
+      vector_enabled = !probe.empty() && probe[0].ok;
+    }
+
     assets.push_back({source_asset_id, {source_path.filename().string(), source_bytes}});
     doc["assets"].push_back(json{{"id", source_asset_id},
                                  {"name", source_path.filename().string()},
@@ -1159,7 +1181,9 @@ class Workspace {
                              {"pageCount", result.pageCount},
                              {"title", result.title},
                              {"author", result.author},
-                             {"format", result.format}};
+                             {"format", result.format},
+                             {"vector", vector_enabled ? "svg" : "raster"},
+                             {"encrypted", result.encrypted}};
     doc["paper"]["width"] = paper_width;
     doc["paper"]["height"] = paper_height;
 
@@ -1247,6 +1271,59 @@ class Workspace {
     insert_catalog(doc);
     tx.commit();
     return json{{"id", id}, {"title", title}, {"pages", doc["pages"].size()}};
+  }
+
+  json render_book_pages_svg(const json& request) {
+    const std::string doc_id = request.value("documentId", "");
+    if (!safe_id(doc_id)) throw CoreError("文档 ID 非法");
+    if (!request.contains("pageIndexes") || !request["pageIndexes"].is_array()) {
+      throw CoreError("缺少页面列表");
+    }
+    const auto& raw_indexes = request["pageIndexes"];
+    if (raw_indexes.empty() || raw_indexes.size() > 8) {
+      throw CoreError("单次最多请求 8 个矢量页面");
+    }
+    const fs::path path = document_path(root_, doc_id);
+    const json doc = load_document_payload(path);
+    if (!doc.contains("bookSource") || !doc["bookSource"].is_object()) {
+      throw CoreError("文档不是书籍");
+    }
+    const json& source = doc["bookSource"];
+    if (source.value("mime", "") != "application/pdf") {
+      throw CoreError("只有 PDF 书籍支持矢量页面");
+    }
+    if (source.value("vector", "raster") != "svg") {
+      throw CoreError("该书籍未启用矢量页面");
+    }
+    const std::string asset_id = source.value("assetId", "");
+    if (asset_id.empty()) throw CoreError("书籍源文件缺失");
+    const int page_count = source.value("pageCount", 0);
+
+    std::vector<int> indexes;
+    indexes.reserve(raw_indexes.size());
+    for (const auto& value : raw_indexes) {
+      if (!value.is_number_integer()) throw CoreError("页面序号无效");
+      const int index = value.get<int>();
+      if (index < 0 || index >= page_count) throw CoreError("页面序号超出范围");
+      indexes.push_back(index);
+    }
+
+    const std::string bytes = read_asset_bytes(path, asset_id);
+    const auto rendered = render_pdf_pages_svg(bytes, indexes);
+    json pages = json::array();
+    json failures = json::array();
+    for (const auto& page : rendered) {
+      if (page.ok) {
+        pages.push_back(json{{"index", page.pageIndex},
+                             {"width", page.width},
+                             {"height", page.height},
+                             {"svg", page.svg}});
+      } else {
+        failures.push_back(json{{"index", page.pageIndex},
+                                {"error", page.error.empty() ? "矢量渲染失败" : page.error}});
+      }
+    }
+    return json{{"pages", pages}, {"failures", failures}};
   }
 
   json export_document(const json& request) {

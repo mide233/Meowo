@@ -3,15 +3,59 @@
 #include <gtest/gtest.h>
 #include <nlohmann/json.hpp>
 
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>
 #include <fstream>
 #include <string>
+#include <vector>
 
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
 namespace {
+
+void write_vector_pdf(const fs::path& path) {
+  const std::string content1 =
+      "BT /F1 24 Tf 40 340 Td (Hello Vector) Tj ET\n"
+      "0 0 1 rg 20 20 260 100 re f\n"
+      "1 0 0 RG 3 w 20 200 m 280 300 l S\n";
+  const std::string content2 =
+      "BT /F1 20 Tf 40 340 Td (Page Two) Tj ET\n"
+      "0 .6 .2 rg 100 100 100 100 re f\n";
+  const std::vector<std::string> objects = {
+      "<< /Type /Catalog /Pages 2 0 R >>",
+      "<< /Type /Pages /Kids [3 0 R 5 0 R] /Count 2 >>",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400]"
+      " /Resources << /Font << /F1 7 0 R >> >> /Contents 4 0 R >>",
+      "<< /Length " + std::to_string(content1.size()) + " >>\nstream\n" + content1 +
+          "endstream",
+      "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 400]"
+      " /Resources << /Font << /F1 7 0 R >> >> /Contents 6 0 R >>",
+      "<< /Length " + std::to_string(content2.size()) + " >>\nstream\n" + content2 +
+          "endstream",
+      "<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>",
+  };
+  std::string pdf = "%PDF-1.4\n%\xE2\xE3\xCF\xD3\n";
+  std::vector<size_t> offsets;
+  for (size_t i = 0; i < objects.size(); ++i) {
+    offsets.push_back(pdf.size());
+    pdf += std::to_string(i + 1) + " 0 obj\n" + objects[i] + "\nendobj\n";
+  }
+  const size_t xref = pdf.size();
+  pdf += "xref\n0 " + std::to_string(objects.size() + 1) + "\n";
+  pdf += "0000000000 65535 f \n";
+  for (const size_t offset : offsets) {
+    char line[32];
+    std::snprintf(line, sizeof(line), "%010zu 00000 n \n", offset);
+    pdf += line;
+  }
+  pdf += "trailer\n<< /Size " + std::to_string(objects.size() + 1) +
+         " /Root 1 0 R >>\nstartxref\n" + std::to_string(xref) + "\n%%EOF\n";
+
+  std::ofstream out(path, std::ios::binary);
+  out.write(pdf.data(), static_cast<std::streamsize>(pdf.size()));
+}
 
 struct TempDir {
   fs::path path;
@@ -129,6 +173,69 @@ TEST(Core, MarkdownImportCreatesBodyText) {
   ASSERT_TRUE(doc["pages"][0]["body"].is_object());
   EXPECT_NE(doc["pages"][0]["body"]["markdown"].get<std::string>().find("Markdown"),
             std::string::npos);
+}
+
+TEST(Core, PdfImportKeepsRasterFallbackAndRendersVectorPages) {
+  TempDir temp;
+  Core core(temp.path);
+  const fs::path pdf = temp.path / "vector.pdf";
+  write_vector_pdf(pdf);
+
+  const json imported = core.call({{"op", "import_pdf"}, {"sourcePath", pdf.string()}});
+  const json doc = core.call({{"op", "open_document"}, {"id", imported["id"]}});
+  ASSERT_TRUE(doc["bookSource"].is_object());
+  EXPECT_EQ(doc["bookSource"]["vector"], "svg");
+  EXPECT_FALSE(doc["bookSource"]["encrypted"].get<bool>());
+  ASSERT_EQ(doc["pages"].size(), 2u);
+  EXPECT_EQ(doc["pages"][0]["sourceIndex"], 0);
+  EXPECT_NE(doc["pages"][0]["sourceText"].get<std::string>().find("Hello Vector"),
+            std::string::npos);
+
+  const std::string page_asset = doc["pages"][0]["sourceAssetId"];
+  const json png = core.call(
+      {{"op", "get_asset"}, {"documentId", imported["id"]}, {"assetId", page_asset}});
+  EXPECT_EQ(png["mime"], "image/png");
+  EXPECT_GT(png["size"].get<int>(), 1000);
+
+  const json rendered = core.call({{"op", "render_book_pages_svg"},
+                                   {"documentId", imported["id"]},
+                                   {"pageIndexes", {0, 1}}});
+  ASSERT_TRUE(rendered["failures"].empty());
+  ASSERT_EQ(rendered["pages"].size(), 2u);
+  for (const auto& page : rendered["pages"]) {
+    const std::string svg = page["svg"];
+    EXPECT_EQ(svg.rfind("<svg", 0), 0u);
+    EXPECT_NE(svg.find("<path"), std::string::npos);
+    EXPECT_EQ(svg.find("xlink:href=\"#font_"), std::string::npos);
+    EXPECT_GT(svg.size(), 1000u);
+    EXPECT_EQ(page["width"].get<double>(), 300.0);
+    EXPECT_EQ(page["height"].get<double>(), 400.0);
+  }
+}
+
+TEST(Core, RasterBookRejectsVectorPageRequests) {
+  TempDir temp;
+  Core core(temp.path);
+  const fs::path pdf = temp.path / "raster.pdf";
+  write_vector_pdf(pdf);
+  const json imported = core.call({{"op", "import_pdf"}, {"sourcePath", pdf.string()}});
+
+  // Simulates documents imported before vector support (no marker) and the
+  // explicit raster fallback for encrypted/unsupported PDFs.
+  json doc = core.call({{"op", "open_document"}, {"id", imported["id"]}});
+  doc["bookSource"]["vector"] = "raster";
+  core.call({{"op", "save_document"}, {"document", doc}});
+
+  const auto request_vector_page = [&] {
+    core.call({{"op", "render_book_pages_svg"},
+               {"documentId", imported["id"]},
+               {"pageIndexes", {0}}});
+  };
+  EXPECT_THROW(request_vector_page(), std::runtime_error);
+  const json reopened = core.call({{"op", "open_document"}, {"id", imported["id"]}});
+  EXPECT_EQ(reopened["pages"][0]["sourceAssetId"],
+            doc["pages"][0]["sourceAssetId"]);
+  EXPECT_EQ(reopened["bookSource"]["vector"], "raster");
 }
 
 TEST(Core, AssetRoundTrip) {

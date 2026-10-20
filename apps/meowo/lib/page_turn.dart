@@ -3,6 +3,7 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 
+import 'book_vector.dart';
 import 'canvas_view.dart';
 
 /// Defaults for album-style page turning.
@@ -347,6 +348,7 @@ class PageTurnLayer extends StatefulWidget {
     required this.pages,
     required this.pageIndex,
     required this.images,
+    this.vectors = const <String, BookVectorPage>{},
     required this.onPageRequested,
     required this.builder,
     this.enabled = true,
@@ -356,6 +358,7 @@ class PageTurnLayer extends StatefulWidget {
   final List<Map<String, dynamic>> pages;
   final int pageIndex;
   final Map<String, ui.Image> images;
+  final Map<String, BookVectorPage> vectors;
   final Future<void> Function(int delta) onPageRequested;
   final Widget Function(BuildContext context, PageTurnController controller)
   builder;
@@ -519,6 +522,7 @@ class _PageTurnLayerState extends State<PageTurnLayer>
                 page: page,
                 scale: scale,
                 images: widget.images,
+                vectors: widget.vectors,
                 inProgress: const [],
                 inProgressPressures: const [],
                 inProgressColor: const Color(0xFF2B2A27),

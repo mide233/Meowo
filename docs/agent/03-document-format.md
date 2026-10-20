@@ -719,6 +719,29 @@ CREATE VIRTUAL TABLE catalog_search USING fts5(
 - 导入全部在临时数据库/临时文件完成，成功后原子移动；
 - 失败/取消不进入资料库，不留下孤儿大文件。
 
+### 10.5 PDF 矢量页元数据（2026-10-20 实现）
+
+当前文档 payload 使用 `bookSource` 对象记录书籍源。本轮新增两个可选字段，不改变页面/资产结构：
+
+```json
+"bookSource": {
+  "assetId": "asset_...",
+  "mime": "application/pdf",
+  "engine": "mupdf",
+  "pageCount": 120,
+  "format": "PDF 1.7",
+  "vector": "svg",
+  "encrypted": false
+}
+```
+
+- `vector`: `"svg"` 表示非加密 PDF 的第 1 页已成功探测 SVG 输出，运行时可按页请求矢量；`"raster"` 或字段缺失表示只使用 PNG。旧文档按 `"raster"` 处理。
+- `encrypted`: 导入时文档需要密码则为 `true`。密码不持久化，因此加密书籍即使导入成功也固定为 `"raster"`。
+- 每页 `sourceAssetId` 仍指向 `image/png` 的 `book_page` 资产；该 PNG 始终保留，用于回退、缩略图与导出。
+- 不新增 `book_page_svg` 资产。矢量页由运行期核心操作 `render_book_pages_svg` 从 `book_source` 原文按需生成，避免 500 页书籍写入数 GB SVG。
+- `render_book_pages_svg` 请求/响应不进入持久化格式：请求 `{documentId, pageIndexes[1..8]}`，响应 `{pages:[{index,width,height,svg}], failures:[{index,error}]}`。
+- 兼容性：读取方必须忽略未知的 `bookSource` 字段；不支持 `"svg"` 的旧版本仍可打开文档并绘制 PNG。
+
 ---
 
 ## 11. 安全与完整性校验
@@ -761,6 +784,7 @@ CREATE VIRTUAL TABLE catalog_search USING fts5(
 - [ ] 文本 Markdown 原样保存（除 LF 规范化）；链接资产引用正确。
 - [ ] Markdown 图片/附件引用计数、删除保护正确。
 - [ ] 图书页索引连续且在页数范围内；PDF/EPUB 源资产存在。
+- [ ] `bookSource.vector` 仅为 `svg`/`raster`；缺失按 `raster`；加密 PDF 不得为 `svg`；对应 PNG 页资产始终存在。
 - [ ] 资产 sha256 校验通过；重复资产去重不破坏引用。
 - [ ] 保存中途模拟失败：旧 DB 仍可打开，无半文档。
 - [ ] WAL 未 checkpoint 时强行终止：重开恢复已提交内容。

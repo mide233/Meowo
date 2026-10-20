@@ -69,6 +69,82 @@ void main() {
       (opened['assets'] as List).any((a) => a['mime'] == 'application/pdf'),
       isTrue,
     );
+    expect(opened['bookSource']['vector'], 'svg');
+    expect(
+      (opened['assets'] as List).any(
+        (a) => a['kind'] == 'book_page' && a['mime'] == 'image/png',
+      ),
+      isTrue,
+      reason: 'the PNG snapshot stays as the runtime fallback',
+    );
+
+    final vector = core.call('render_book_pages_svg', {
+      'documentId': doc['id'],
+      'pageIndexes': [0],
+    });
+    expect(vector['failures'], isEmpty);
+    final vectorPages = vector['pages'] as List;
+    expect(vectorPages, hasLength(1));
+    final svg = vectorPages.first['svg'] as String;
+    expect(svg, startsWith('<svg'));
+    expect(svg, contains('<image'));
+    expect(svg, isNot(contains('xlink:href="#font_')));
+  });
+
+  test('encrypted PDF keeps PNG pages and never advertises vectors', () async {
+    final ghostscript = await Process.run('which', ['gs']);
+    if (ghostscript.exitCode != 0) {
+      // Optional local dependency; the raster fallback is still covered by the
+      // C++ marker tests when Ghostscript is unavailable.
+      return;
+    }
+    final root = Directory.systemTemp.createTempSync('meowo-pdf-enc-test-');
+    final core = await MeowoCore.open(root.path);
+    addTearDown(core.close);
+    addTearDown(() => root.deleteSync(recursive: true));
+    final plain = File('${root.path}/plain.pdf');
+    final result = await Process.run('python3', [
+      '-c',
+      'from PIL import Image; Image.new("RGB",(300,400),"white").save(r"${plain.path}")',
+    ]);
+    expect(result.exitCode, 0, reason: result.stderr.toString());
+    final encrypted = File('${root.path}/encrypted.pdf');
+    final gs = await Process.run('gs', [
+      '-q',
+      '-dNOPAUSE',
+      '-dBATCH',
+      '-sDEVICE=pdfwrite',
+      '-sOwnerPassword=owner',
+      '-sUserPassword=user',
+      '-dPermissions=-4',
+      '-dEncryptionR=3',
+      '-dKeyLength=128',
+      '-sOutputFile=${encrypted.path}',
+      plain.path,
+    ]);
+    expect(gs.exitCode, 0, reason: gs.stderr.toString());
+
+    final doc = core.call('import_pdf', {
+      'sourcePath': encrypted.path,
+      'password': 'user',
+    });
+    expect(doc['pages'], greaterThanOrEqualTo(1));
+    final opened = core.call('open_document', {'id': doc['id']});
+    expect(opened['bookSource']['encrypted'], isTrue);
+    expect(opened['bookSource']['vector'], 'raster');
+    expect(
+      (opened['assets'] as List).any(
+        (a) => a['kind'] == 'book_page' && a['mime'] == 'image/png',
+      ),
+      isTrue,
+    );
+    expect(
+      () => core.call('render_book_pages_svg', {
+        'documentId': doc['id'],
+        'pageIndexes': [0],
+      }),
+      throwsA(isA<MeowoException>()),
+    );
   });
 
   test('EPUB import uses MuPDF and stores the original', () async {
@@ -119,6 +195,14 @@ with zipfile.ZipFile(path, "w") as z:
         (a) => a['mime'] == 'application/epub+zip',
       ),
       isTrue,
+    );
+    expect(opened['bookSource']['vector'], 'raster');
+    expect(
+      () => core.call('render_book_pages_svg', {
+        'documentId': doc['id'],
+        'pageIndexes': [0],
+      }),
+      throwsA(isA<MeowoException>()),
     );
   });
 }

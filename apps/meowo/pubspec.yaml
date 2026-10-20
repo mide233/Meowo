@@ -36,6 +36,8 @@ dependencies:
   cupertino_icons: ^1.0.8
   ffi: ^2.2.0
   file_selector: ^1.1.0
+  # MIT; pinned for the PDF vector background pipeline.
+  flutter_svg: 2.3.0
   flutter_markdown: ^0.7.7+1
   path_provider: ^2.1.6
   pdf: ^3.13.1

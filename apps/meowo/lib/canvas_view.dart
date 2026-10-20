@@ -5,6 +5,7 @@ import 'dart:ui' as ui;
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import 'book_vector.dart';
 import 'image_ops.dart';
 import 'ink_ops.dart';
 import 'page_turn.dart';
@@ -19,6 +20,7 @@ class CanvasView extends StatefulWidget {
     required this.width,
     required this.activeLayerId,
     required this.images,
+    this.vectors = const <String, BookVectorPage>{},
     required this.selectionIds,
     required this.selectionBounds,
     required this.lassoRect,
@@ -44,6 +46,7 @@ class CanvasView extends StatefulWidget {
   final double width;
   final String activeLayerId;
   final Map<String, ui.Image> images;
+  final Map<String, BookVectorPage> vectors;
   final Set<String> selectionIds;
   final Rect? selectionBounds;
   final bool lassoRect;
@@ -393,10 +396,29 @@ class CanvasViewState extends State<CanvasView> {
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
                           onTapUp: widget.tool == 'pointer' ? _onTapUp : null,
-                          child: CustomPaint(
-                            key: const ValueKey('meowo-canvas'),
-                            size: canvasSize,
-                            painter: _painter(scale),
+                          child: Stack(
+                            fit: StackFit.expand,
+                            children: [
+                              // The book background changes only when the page
+                              // or zoom changes. Keeping it in its own repaint
+                              // boundary prevents thousands of vector glyph
+                              // paths from being replayed for every ink stroke.
+                              RepaintBoundary(
+                                child: CustomPaint(
+                                  painter: BookBackgroundPainter(
+                                    document: widget.document,
+                                    page: page,
+                                    scale: scale,
+                                    images: widget.images,
+                                    vectors: widget.vectors,
+                                  ),
+                                ),
+                              ),
+                              CustomPaint(
+                                key: const ValueKey('meowo-canvas'),
+                                painter: _painter(scale),
+                              ),
+                            ],
                           ),
                         ),
                       ),
@@ -418,6 +440,8 @@ class CanvasViewState extends State<CanvasView> {
       scale: scale,
       viewOffset: _offset,
       images: widget.images,
+      vectors: widget.vectors,
+      paintBackground: false,
       inProgress: _points,
       inProgressPressures: _pressures,
       inProgressColor: widget.color,
@@ -1066,12 +1090,122 @@ class CanvasViewState extends State<CanvasView> {
   }
 }
 
+/// Paints the paper base and its ruled/grid/dotted texture in page points.
+void paintPagePaper(
+  Canvas canvas,
+  Map<String, dynamic> document,
+  Map<String, dynamic> page,
+  Rect rect,
+) {
+  canvas.drawRect(rect, Paint()..color = const Color(0xFFFFFCF5));
+  final paper = document['paper'] as Map? ?? const {};
+  final background =
+      page['background'] as String? ??
+      paper['background'] as String? ??
+      'blank';
+  final linePaint = Paint()
+    ..color = const Color(0xFFB9CEDB).withValues(alpha: 0.42)
+    ..strokeWidth = 0.7;
+  if (background == 'ruled') {
+    for (double y = 32; y < rect.height; y += 28) {
+      canvas.drawLine(Offset(0, y), Offset(rect.width, y), linePaint);
+    }
+  } else if (background == 'grid') {
+    for (double y = 24; y < rect.height; y += 24) {
+      canvas.drawLine(Offset(0, y), Offset(rect.width, y), linePaint);
+    }
+    for (double x = 24; x < rect.width; x += 24) {
+      canvas.drawLine(Offset(x, 0), Offset(x, rect.height), linePaint);
+    }
+  } else if (background == 'dotted') {
+    final dot = Paint()
+      ..color = const Color(0xFFB9CEDB).withValues(alpha: 0.55);
+    for (double y = 24; y < rect.height; y += 24) {
+      for (double x = 24; x < rect.width; x += 24) {
+        canvas.drawCircle(Offset(x, y), 0.9, dot);
+      }
+    }
+  }
+}
+
+/// Paints the read-only book page background: paper texture followed by a
+/// vector page when available, otherwise the imported PNG snapshot.
+void paintBookPageBackground(
+  Canvas canvas,
+  Map<String, dynamic> document,
+  Map<String, dynamic> page,
+  Rect pageRect,
+  Map<String, ui.Image> images,
+  Map<String, BookVectorPage> vectors,
+) {
+  paintPagePaper(canvas, document, page, pageRect);
+  final vector = vectors[page['id']];
+  if (vector != null) {
+    paintBookVector(canvas, pageRect, vector);
+    return;
+  }
+  final sourceAsset = page['sourceAssetId'] as String?;
+  final image = sourceAsset == null ? null : images[sourceAsset];
+  if (image != null) {
+    paintImage(
+      canvas: canvas,
+      rect: pageRect,
+      image: image,
+      fit: BoxFit.fill,
+      filterQuality: FilterQuality.medium,
+    );
+  }
+}
+
+/// Background layer for a paged/book canvas. It sits behind annotations in its
+/// own RepaintBoundary and is the only place the page snapshot/vector is drawn.
+class BookBackgroundPainter extends CustomPainter {
+  BookBackgroundPainter({
+    required this.document,
+    required this.page,
+    required this.scale,
+    required this.images,
+    required this.vectors,
+  });
+
+  final Map<String, dynamic> document;
+  final Map<String, dynamic> page;
+  final double scale;
+  final Map<String, ui.Image> images;
+  final Map<String, BookVectorPage> vectors;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final pageWidth = (page['width'] as num?)?.toDouble() ?? 595.276;
+    final pageHeight = (page['height'] as num?)?.toDouble() ?? 841.89;
+    canvas.save();
+    canvas.scale(scale);
+    final pageRect = Rect.fromLTWH(0, 0, pageWidth, pageHeight);
+    canvas.clipRect(pageRect);
+    paintBookPageBackground(canvas, document, page, pageRect, images, vectors);
+    canvas.restore();
+  }
+
+  @override
+  bool shouldRepaint(covariant BookBackgroundPainter oldDelegate) {
+    final pageId = page['id'];
+    return oldDelegate.scale != scale ||
+        oldDelegate.document != document ||
+        oldDelegate.page != page ||
+        oldDelegate.images != images ||
+        oldDelegate.vectors.length != vectors.length ||
+        oldDelegate.vectors[pageId] != vectors[pageId];
+  }
+}
+
 class MeowoCanvasPainter extends CustomPainter {
   MeowoCanvasPainter({
     required this.document,
     required this.page,
     required this.scale,
     required this.images,
+    this.vectors = const <String, BookVectorPage>{},
+    this.paintBackground = true,
     required this.inProgress,
     required this.inProgressPressures,
     required this.inProgressColor,
@@ -1092,6 +1226,12 @@ class MeowoCanvasPainter extends CustomPainter {
   /// because their CustomPaint is already positioned at the paper origin.
   final Offset viewOffset;
   final Map<String, ui.Image> images;
+  final Map<String, BookVectorPage> vectors;
+
+  /// Paged views paint the read-only book background in a separate
+  /// [BookBackgroundPainter] so ink strokes do not replay it. Export and
+  /// thumbnail rendering keep it in this painter.
+  final bool paintBackground;
   final List<Offset> inProgress;
   final List<double> inProgressPressures;
   final Color inProgressColor;
@@ -1114,15 +1254,14 @@ class MeowoCanvasPainter extends CustomPainter {
     canvas.scale(scale);
     final pageRect = Rect.fromLTWH(0, 0, pageWidth, pageHeight);
     canvas.clipRect(pageRect);
-    _paintPaper(canvas, pageRect);
-    final sourceAsset = page['sourceAssetId'] as String?;
-    if (sourceAsset != null && images[sourceAsset] != null) {
-      paintImage(
-        canvas: canvas,
-        rect: pageRect,
-        image: images[sourceAsset]!,
-        fit: BoxFit.fill,
-        filterQuality: FilterQuality.medium,
+    if (paintBackground) {
+      paintBookPageBackground(
+        canvas,
+        document,
+        page,
+        pageRect,
+        images,
+        vectors,
       );
     }
     _paintBodyAndLayers(canvas);
@@ -1253,38 +1392,6 @@ class MeowoCanvasPainter extends CustomPainter {
       );
       canvas.drawRect(rect, fill);
       canvas.drawRect(rect, paint);
-    }
-  }
-
-  void _paintPaper(Canvas canvas, Rect rect) {
-    canvas.drawRect(rect, Paint()..color = const Color(0xFFFFFCF5));
-    final paper = document['paper'] as Map? ?? const {};
-    final background =
-        page['background'] as String? ??
-        paper['background'] as String? ??
-        'blank';
-    final linePaint = Paint()
-      ..color = const Color(0xFFB9CEDB).withValues(alpha: 0.42)
-      ..strokeWidth = 0.7;
-    if (background == 'ruled') {
-      for (double y = 32; y < rect.height; y += 28) {
-        canvas.drawLine(Offset(0, y), Offset(rect.width, y), linePaint);
-      }
-    } else if (background == 'grid') {
-      for (double y = 24; y < rect.height; y += 24) {
-        canvas.drawLine(Offset(0, y), Offset(rect.width, y), linePaint);
-      }
-      for (double x = 24; x < rect.width; x += 24) {
-        canvas.drawLine(Offset(x, 0), Offset(x, rect.height), linePaint);
-      }
-    } else if (background == 'dotted') {
-      final dot = Paint()
-        ..color = const Color(0xFFB9CEDB).withValues(alpha: 0.55);
-      for (double y = 24; y < rect.height; y += 24) {
-        for (double x = 24; x < rect.width; x += 24) {
-          canvas.drawCircle(Offset(x, y), 0.9, dot);
-        }
-      }
     }
   }
 
@@ -1637,6 +1744,7 @@ Future<Uint8List> renderPagePng({
   required Map<String, dynamic> document,
   required Map<String, dynamic> page,
   required Map<String, ui.Image> images,
+  Map<String, BookVectorPage> vectors = const <String, BookVectorPage>{},
   double pixelRatio = 2.0,
 }) async {
   final width = (page['width'] as num?)?.toDouble() ?? 595.276;
@@ -1649,6 +1757,7 @@ Future<Uint8List> renderPagePng({
     page: page,
     scale: 1,
     images: images,
+    vectors: vectors,
     inProgress: const <Offset>[],
     inProgressPressures: const <double>[],
     inProgressColor: const Color(0xFF222222),

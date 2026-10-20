@@ -301,6 +301,40 @@ class AppState extends ChangeNotifier {
     });
   }
 
+  /// Renders up to eight PDF pages to SVG in a background isolate. Returns an
+  /// empty map when vector pages are unsupported or the source is unavailable;
+  /// the editor then keeps the imported PNG snapshots.
+  Future<Map<int, String>> renderBookPagesSvg(
+    String documentId,
+    List<int> pageIndexes,
+  ) async {
+    if (pageIndexes.isEmpty) return const <int, String>{};
+    final root = libraryRoot;
+    try {
+      final result = await Isolate.run(() async {
+        final worker = await MeowoCore.open(root, acquireLock: false);
+        try {
+          return worker.call('render_book_pages_svg', {
+            'documentId': documentId,
+            'pageIndexes': pageIndexes,
+          });
+        } finally {
+          worker.close();
+        }
+      });
+      final pages = <int, String>{};
+      for (final value in result['pages'] as List? ?? const []) {
+        final page = value as Map;
+        final index = page['index'];
+        final svg = page['svg'];
+        if (index is int && svg is String) pages[index] = svg;
+      }
+      return pages;
+    } catch (_) {
+      return const <int, String>{};
+    }
+  }
+
   Future<List<Map<String, dynamic>>> listAssets(String documentId) async {
     final result = core.call('list_assets', {'documentId': documentId});
     return (result['assets'] as List? ?? const [])

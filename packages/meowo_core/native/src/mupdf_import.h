@@ -19,7 +19,25 @@ struct MuPdfResult {
   std::string author;
   std::string format;
   std::string version;
+  // True when the document required a password. Passwords are never
+  // persisted, so encrypted books keep their PNG page snapshots.
+  bool encrypted = false;
 };
+
+struct MuPdfVectorPage {
+  bool ok = false;
+  std::string error;
+  int pageIndex = -1;
+  double width = 0;
+  double height = 0;
+  std::string svg;
+};
+
+// Renders selected pages of an in-memory PDF to standalone SVG documents.
+// Glyph <use> references are inlined because Flutter's SVG compiler rejects
+// more than 1000 reference expansions per document.
+std::vector<MuPdfVectorPage> render_pdf_pages_svg(
+    const std::string& pdfBytes, const std::vector<int>& pageIndexes);
 
 // Renders a PDF or EPUB to page-0001.png ... in outputDir using MuPDF.
 // The caller owns outputDir and must clean it up. Text is written alongside

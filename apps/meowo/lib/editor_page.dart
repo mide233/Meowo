@@ -15,6 +15,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'app_state.dart';
 import 'attachment_panel.dart';
+import 'book_vector.dart';
 import 'canvas_view.dart';
 import 'image_edit_dialog.dart';
 import 'ink_ops.dart';
@@ -39,6 +40,9 @@ class _EditorPageState extends State<EditorPage> {
   final _undo = <String>[];
   final _redo = <String>[];
   final _images = <String, ui.Image>{};
+  final _vectors = BookVectorCache();
+  final _vectorFetching = <String>{};
+  int _vectorGeneration = 0;
   final _selectedIds = <String>{};
   final _clipboard = <Map<String, dynamic>>[];
   String? _clipboardPageId;
@@ -167,6 +171,7 @@ class _EditorPageState extends State<EditorPage> {
     for (final image in _images.values) {
       image.dispose();
     }
+    _vectors.dispose();
     super.dispose();
   }
 
@@ -186,6 +191,9 @@ class _EditorPageState extends State<EditorPage> {
       _pageSlideDirection = 1;
       _suppressPageSlide = false;
       _retainedImageIds.clear();
+      _vectors.dispose();
+      _vectorFetching.clear();
+      _vectorGeneration += 1;
       _undo.clear();
       _redo.clear();
       _selectedIds.clear();
@@ -260,6 +268,90 @@ class _EditorPageState extends State<EditorPage> {
       ..clear()
       ..addAll(ids);
     if (mounted) setState(() {});
+    unawaited(_loadPageVectors());
+  }
+
+  bool _supportsBookVector(Map<String, dynamic> page) {
+    final doc = _doc;
+    if (doc == null || doc['kind'] != 'book') return false;
+    final source = doc['bookSource'];
+    if (source is! Map || source['vector'] != 'svg') return false;
+    if (page['isNotePage'] != false) return false;
+    return page['sourceIndex'] is int;
+  }
+
+  Future<void> _loadPageVectors() async {
+    final doc = _doc;
+    if (doc == null || doc['kind'] != 'book') return;
+    final pages = _pages;
+    final indexes = <int>{
+      _pageIndex,
+      if (_pageIndex > 0) _pageIndex - 1,
+      if (_pageIndex + 1 < pages.length) _pageIndex + 1,
+    };
+    final requested = <int, Map<String, dynamic>>{};
+    for (final index in indexes) {
+      if (index < 0 || index >= pages.length) continue;
+      final page = pages[index];
+      final pageId = page['id'] as String?;
+      if (pageId == null || !_supportsBookVector(page)) continue;
+      if (_vectors[pageId] != null ||
+          _vectors.isUnavailable(pageId) ||
+          _vectorFetching.contains(pageId)) {
+        continue;
+      }
+      requested[index] = page;
+    }
+    if (requested.isEmpty) {
+      _retainVisibleVectors(pages, indexes);
+      return;
+    }
+    final requestedIds = {
+      for (final page in requested.values)
+        if (page['id'] case final String id) id,
+    };
+    _vectorFetching.addAll(requestedIds);
+    final generation = ++_vectorGeneration;
+    try {
+      final svgs = await state.renderBookPagesSvg(
+        doc['id'] as String,
+        requested.keys.toList(),
+      );
+      if (!mounted ||
+          generation != _vectorGeneration ||
+          _doc?['id'] != doc['id']) {
+        return;
+      }
+      if (svgs.isEmpty) {
+        for (final page in requested.values) {
+          final pageId = page['id'] as String?;
+          if (pageId != null) _vectors.markUnavailable(pageId);
+        }
+        return;
+      }
+      for (final entry in svgs.entries) {
+        final page = requested[entry.key];
+        final pageId = page?['id'] as String?;
+        if (pageId == null) continue;
+        await _vectors.load(pageId, entry.value);
+        if (!mounted || generation != _vectorGeneration) return;
+      }
+      _retainVisibleVectors(pages, indexes);
+      if (mounted) setState(() {});
+    } finally {
+      _vectorFetching.removeAll(requestedIds);
+    }
+  }
+
+  void _retainVisibleVectors(
+    List<Map<String, dynamic>> pages,
+    Set<int> indexes,
+  ) {
+    _vectors.retain({
+      for (final index in indexes)
+        if (index >= 0 && index < pages.length)
+          if (pages[index]['id'] case final String id) id,
+    });
   }
 
   Future<ui.Image> _decodeImage(List<int> bytes) async {
@@ -1380,6 +1472,7 @@ class _EditorPageState extends State<EditorPage> {
       width: _width,
       activeLayerId: _activeLayerId ?? '',
       images: _images,
+      vectors: _vectors.pages,
       selectionIds: _selectedIds,
       selectionBounds: _selectionBounds,
       lassoRect: _lassoRect,
@@ -1404,6 +1497,7 @@ class _EditorPageState extends State<EditorPage> {
             pages: _pages,
             pageIndex: _pageIndex,
             images: _images,
+            vectors: _vectors.pages,
             onPageRequested: _turnPage,
             builder: (context, pageTurn) => buildCanvas(pageTurn),
           );

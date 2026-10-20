@@ -66,7 +66,8 @@ flowchart TB
 | 相机（平移/缩放） | Flutter UI 状态 | 可持久化每页相机位置到文档偏好 |
 | 进行中的笔迹 | Flutter 预览 + C++ 接收增量 | 手势结束后由 C++ 固化 |
 | 选择状态 | Flutter UI 状态 | 查询 C++ 几何/命中结果 |
-| 图书页位图 | C++ BookEngine 渲染 → Dart 纹理缓存 | 绘制 `ui.Image`，不解析源文件 |
+| 图书页 PNG 回退 | C++ BookEngine 导入时渲染 → Dart 纹理缓存 | 绘制 `ui.Image`；加密/EPUB/不支持页使用 |
+| 图书页矢量 | C++ MuPDF 按页输出 SVG → Dart `flutter_svg` 解析 | 保留原始 PDF；按需生成，任意缩放重绘 |
 | 资料库缓存与索引 | C++ Workspace / SQLite | 展示、筛选、发起操作 |
 | 设置 | Flutter（simple prefs）+ C++ 可读的必要项 | 通过显式同步接口写入核心 |
 
@@ -83,8 +84,8 @@ flowchart TB
 | FFI | Dart `ffi` + `ffigen` | C ABI 稳定边界；生成代码提交并校验 |
 | 存储 | SQLite 3（amalgamation 或系统库统一方案） | WAL、事务、FTS5；必须跨三平台版本一致 |
 | 序列化 | FlatBuffers（元素 payload、图书页元数据） | 版本化、零拷贝解析、可 fuzz；schema 源文件入库 |
-| PDF/EPUB | MuPDF 1.26.3（AGPL） | 统一渲染为固定页 PNG；保留源文件；许可证义务见 OQ-011 |
-| EPUB | MuPDF 1.26.3（AGPL） | 导入时固定 A4 布局并渲染为页面；保留原 EPUB；不提供重排 |
+| PDF/EPUB | MuPDF 1.26.3（AGPL） | 导入时保留源文件并生成固定页 PNG；PDF 额外按需输出逐页 SVG；许可证义务见 OQ-011 |
+| EPUB | MuPDF 1.26.3（AGPL） | 导入时固定 A4 布局并渲染为页面；保留原 EPUB；不提供重排，不启用矢量页 |
 | 文本渲染 | Dart Markdown parser + Flutter widgets | 本地渲染；公式用 KaTeX 兼容实现；不使用远程资源 |
 | 构建 | CMake + Ninja + CTest | C++ 核心独立构建；Flutter FFI 插件集成 |
 | 测试 | GoogleTest/GoogleMock + flutter_test + integration_test | C++ 单测、Dart Widget、端到端 |
@@ -335,12 +336,12 @@ C ABI 不直接被业务 Widget 调用。Dart 包提供：
 
 #### 书页渲染
 
-1. Dart 请求某页指定缩放级别的位图。
-2. C++ 检查缓存；未命中则提交 BookEngine 任务，低优先级排队。
-3. MuPDF 在 worker 线程渲染 RGB/RGBA 缓冲。
-4. 回调/事件返回 buffer 元数据与 job 结果。
-5. Dart 创建 `ui.Image` 并缓存，绘制在图书背景层。
-6. 视口变化时取消不可见页任务，保留有限缓存。
+1. 导入时 MuPDF 仍为每页生成 120 dpi PNG 与文本层，PNG 作为回退/缩略图/加密文档路径。
+2. `bookSource.vector == "svg"` 的 PDF，Dart 按当前页 ±1 请求 `render_book_pages_svg`（一次最多 8 页）。
+3. 核心在 worker isolate 中从 `book_source` 读取原 PDF，MuPDF 逐页输出 SVG（`text=path`）。
+4. C++ 把字形 `<use>` 内联为 `<path>`，使单页引用数低于 flutter_svg 的 1000 次限制；失败/超限的页回退 PNG。
+5. Dart `flutter_svg` 在后台编译 SVG，缓存 `ui.Picture`；`BookBackgroundPainter` 在独立 `RepaintBoundary` 中绘制，缩放时直接重放矢量。
+6. 页面/缩放变化时保留有限缓存并释放不可见页；批注层不重放背景矢量。
 
 #### 导入 EPUB（推荐管线）
 
@@ -430,10 +431,12 @@ C++ core
 
 ### 8.3 图书页
 
-- PDF 页面渲染为位图，按 zoom bucket 缓存；页面源数据自包含。
-- 对低缩放级使用缩略图/低清页，高缩放级按需渲染。
-- 渲染尺寸受内存预算约束：单页超大时只渲染视口 tile 或限制最大像素，避免 OOM。
-- EPUB 建议在导入时固化为固定页面（理想为页面快照 PDF/结构化固定布局），避免不同平台/时间重新分页导致批注错位。该策略与引擎选择在 Phase 0 验证。
+- PDF 页面优先使用 MuPDF 逐页 SVG + `flutter_svg` 的矢量背景；原始 PDF 保存在 `book_source`，不逐页保存 SVG。
+- 矢量不可用（加密 PDF、EPUB、旧文档、解析失败、超限页）时保留 120 dpi PNG；两条路径都在同一页坐标中绘制，批注几何不变。
+- 矢量页在独立 `RepaintBoundary` 中绘制；页面/缩放变化时才重放，笔迹输入路径不等待 PDF 解析。
+- 对低缩放级仍可用 PNG/缩略图；高缩放级绘制矢量，避免固定 DPI 插值模糊。
+- 单页 SVG 上限 24 MiB、单次批量上限 8 页；渲染尺寸和内存预算由后台 isolate 与缓存上限约束。
+- EPUB 在导入时固化为固定页面，保留原 EPUB；不启用矢量页，避免跨平台重新分页导致批注错位。
 
 ## 9. 输入架构
 

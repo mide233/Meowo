@@ -130,5 +130,6 @@
 | 专项 | [mupdf-integration.md](mupdf-integration.md) | Completed（Alpha.4） |
 | 专项 | [workspace-lock.md](workspace-lock.md) | Completed（Alpha.5） |
 | 专项 | [image-editor.md](image-editor.md) | Completed（Alpha.6） |
+| 专项 | [pdf-vector-fidelity.md](pdf-vector-fidelity.md) | Completed（2026-10-20） |
 
 后续阶段计划必须基于上一阶段报告与验证结果编写，不能提前假装已知。
