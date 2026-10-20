@@ -164,10 +164,16 @@ void main() {
       expect(result['vectorPages'], [1]);
       expect(result['fallbackPages'], isEmpty);
       final bytes = File(out).readAsBytesSync();
+      final pdfText = String.fromCharCodes(bytes);
       expect(
-        String.fromCharCodes(bytes).contains('/Subtype/Image'),
+        pdfText.contains('/Subtype/Image'),
         isTrue,
         reason: 'the transparent overlay is embedded as an image XObject',
+      );
+      expect(
+        pdfText.contains('/SMask'),
+        isTrue,
+        reason: 'the overlay alpha channel is preserved',
       );
     });
   });
