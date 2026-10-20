@@ -118,4 +118,5 @@ scripts/build_android_apk.sh
 
 - CTest：22/22 通过（新增方向、笔记页、回退位图、probe 测试）。
 - Flutter/Dart：95/95 通过；`flutter analyze` 无问题。
-- 尚未重新生成 Linux release / Android arm64 APK；当前工具链中的 `.tools/mupdf` 源文件不完整，需恢复完整 MuPDF 构建后再产出二进制。
+- Linux release 已重新构建；6 秒冒烟启动正常（超时退出，无崩溃）。
+- Android arm64 APK 未重新生成：当前 `.tools/mupdf` 的 1.26.3 源文件/arm64 静态库不完整；本次只能用临时 MuPDF 1.27 Linux 运行库验证。需恢复完整 MuPDF 1.26.3 arm64 构建后再产出 APK。
