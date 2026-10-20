@@ -141,7 +141,7 @@ void main() {
     Offset? moved;
     final state = await pumpCanvas(
       tester,
-      tool: 'select',
+      tool: 'pointer',
       elements: [element],
       onElementTap: (value) => tapped = value['id'] as String?,
       onSelectionMove: (delta) => moved = delta,
@@ -157,7 +157,7 @@ void main() {
           body: CanvasView(
             document: document(),
             page: page(elements: [element]),
-            tool: 'select',
+            tool: 'pointer',
             color: Colors.black,
             width: 2,
             activeLayerId: 'layer_1',
@@ -377,5 +377,95 @@ void main() {
 
   test('infinite content bounds fall back to a documented viewport', () {
     expect(infiniteContentBounds(page()), kInfiniteEmptyExportBounds);
+  });
+
+  test('legacy infinite body data is neither content nor bounds', () {
+    final bodyPage = page(
+      body: {
+        'id': 'body_1',
+        'type': 'text',
+        'layoutMode': 'body',
+        'x': 48.0,
+        'y': 48.0,
+        'w': 720.0,
+        'h': 1600.0,
+        'markdown': 'legacy body',
+      },
+    );
+    expect(hasInfiniteContent(bodyPage), isFalse);
+    expect(infiniteContentBounds(bodyPage), kInfiniteEmptyExportBounds);
+  });
+
+  testWidgets('infinite editor hides body text but preserves legacy data', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final root = Directory.systemTemp.createTempSync('meowo-infinite-body-');
+    final core = await MeowoCore.open(root.path);
+    final state = AppState(core: core, libraryRoot: root.path);
+    addTearDown(core.close);
+    addTearDown(() => root.deleteSync(recursive: true));
+    await state.initialize();
+    final created = core.call('create_document', {
+      'title': '无极正文停用',
+      'kind': 'infinite',
+      'paper': {'preset': 'A4'},
+    });
+    await state.refresh();
+    await state.openDocument(created['id'] as String);
+    final page = (state.activeDocument!['pages'] as List).first as Map;
+    page['body'] = {
+      'id': 'legacy_body',
+      'type': 'text',
+      'layoutMode': 'body',
+      'x': 48.0,
+      'y': 48.0,
+      'w': 720.0,
+      'h': 1600.0,
+      'markdown': '保留但不渲染',
+    };
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: EditorPage(state: state)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.byTooltip('正文'), findsNothing);
+    expect(find.byTooltip('文本框'), findsOneWidget);
+    final activePage =
+        (state.activeDocument!['pages'] as List).first as Map<String, dynamic>;
+    expect((activePage['body'] as Map<String, dynamic>)['markdown'], '保留但不渲染');
+    expect(find.text('保留但不渲染'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('paged editor keeps the body text tool', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1000, 900));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final root = Directory.systemTemp.createTempSync('meowo-paged-body-');
+    final core = await MeowoCore.open(root.path);
+    final state = AppState(core: core, libraryRoot: root.path);
+    addTearDown(core.close);
+    addTearDown(() => root.deleteSync(recursive: true));
+    await state.initialize();
+    final created = core.call('create_document', {
+      'title': '书页正文',
+      'kind': 'paged',
+      'paper': {'preset': 'A4'},
+    });
+    await state.refresh();
+    await state.openDocument(created['id'] as String);
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Scaffold(body: EditorPage(state: state)),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(find.byTooltip('正文'), findsOneWidget);
+    expect(tester.takeException(), isNull);
   });
 }

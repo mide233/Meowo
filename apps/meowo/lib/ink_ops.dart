@@ -26,15 +26,11 @@ const Rect kInfiniteEmptyExportBounds = Rect.fromLTWH(0, 0, 1000, 700);
 
 /// Whether an infinite page has visible content that can be fitted/exported.
 ///
-/// An empty `page_body` (blank Markdown) does not count as content, so a new
-/// infinite document still opens at the origin instead of zooming into a large
-/// empty text box.
+/// Infinite documents render text boxes only; legacy `page_body` data is kept
+/// for compatibility but is neither rendered nor counted as content. This
+/// keeps a new infinite document at the origin instead of zooming into a large
+/// invisible text box.
 bool hasInfiniteContent(Map<String, dynamic> page) {
-  final body = page['body'];
-  if (body is Map &&
-      ((body['markdown'] as String?)?.trim().isNotEmpty ?? false)) {
-    return true;
-  }
   for (final value in page['layers'] as List? ?? const []) {
     final layer = value as Map;
     if (layer['visible'] == false) continue;
@@ -45,11 +41,12 @@ bool hasInfiniteContent(Map<String, dynamic> page) {
 
 /// Content bounds for an infinite canvas export.
 ///
-/// Visible layers and a non-empty `page_body` are included. The returned rect
-/// is inflated by [padding]; an empty canvas falls back to
-/// [kInfiniteEmptyExportBounds], which is documented in the report. Content is
-/// intentionally not intersected with [kInfiniteCanvasBounds] so legacy
-/// out-of-bounds data is not silently cropped.
+/// Only visible layer elements are included. Legacy `page_body` data is
+/// intentionally ignored because infinite documents no longer render body
+/// text. The returned rect is inflated by [padding]; an empty canvas falls
+/// back to [kInfiniteEmptyExportBounds], which is documented in the report.
+/// Content is intentionally not intersected with [kInfiniteCanvasBounds] so
+/// legacy out-of-bounds data is not silently cropped.
 Rect infiniteContentBounds(Map<String, dynamic> page, {double padding = 32}) {
   Rect? result;
 
@@ -57,11 +54,6 @@ Rect infiniteContentBounds(Map<String, dynamic> page, {double padding = 32}) {
     result = result == null ? bounds : result!.expandToInclude(bounds);
   }
 
-  final body = page['body'];
-  if (body is Map &&
-      ((body['markdown'] as String?)?.trim().isNotEmpty ?? false)) {
-    include(elementBounds(Map<String, dynamic>.from(body)));
-  }
   for (final value in page['layers'] as List? ?? const []) {
     final layer = value as Map;
     if (layer['visible'] == false) continue;

@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:math' as math;
 import 'dart:typed_data';
 import 'dart:ui' as ui;
 
@@ -17,6 +18,7 @@ import 'attachment_panel.dart';
 import 'canvas_view.dart';
 import 'image_edit_dialog.dart';
 import 'ink_ops.dart';
+import 'page_thumbnail.dart';
 import 'page_turn.dart';
 import 'pressure_curve_dialog.dart';
 
@@ -44,6 +46,8 @@ class _EditorPageState extends State<EditorPage> {
   Rect? _transformStartBounds;
   bool _transformUndoPushed = false;
   bool _lassoRect = false;
+  final _pageThumbnails = PageThumbnailCache();
+  final _zoomNotifier = ValueNotifier<double>(1.0);
   String _eraserMode = 'pixel';
   bool _eraseAllLayers = false;
   bool _eraseGestureActive = false;
@@ -159,6 +163,7 @@ class _EditorPageState extends State<EditorPage> {
   @override
   void dispose() {
     _saveTimer?.cancel();
+    _zoomNotifier.dispose();
     for (final image in _images.values) {
       image.dispose();
     }
@@ -187,6 +192,8 @@ class _EditorPageState extends State<EditorPage> {
       _clipboard.clear();
       _clipboardPageId = null;
       _transformOriginals.clear();
+      _pageThumbnails.clear();
+      _zoomNotifier.value = 1.0;
       _activeLayerId = _layers.isEmpty ? null : _layers.first['id'] as String?;
       await _loadPageImages();
       if (!mounted) return;
@@ -283,6 +290,7 @@ class _EditorPageState extends State<EditorPage> {
     if (_doc == null) return;
     _pushUndo();
     action();
+    _pageThumbnails.clear();
     setState(() {});
     _scheduleSave();
   }
@@ -332,6 +340,7 @@ class _EditorPageState extends State<EditorPage> {
     state.setActiveDocument(previous);
     _selectedIds.clear();
     _transformOriginals.clear();
+    _pageThumbnails.clear();
     final pages = _pages;
     final pageIndex = pages.indexWhere((page) => page['id'] == oldPageId);
     _pageIndex = pageIndex >= 0
@@ -357,6 +366,7 @@ class _EditorPageState extends State<EditorPage> {
     state.setActiveDocument(next);
     _selectedIds.clear();
     _transformOriginals.clear();
+    _pageThumbnails.clear();
     final pages = _pages;
     final pageIndex = pages.indexWhere((page) => page['id'] == oldPageId);
     _pageIndex = pageIndex >= 0
@@ -595,6 +605,10 @@ class _EditorPageState extends State<EditorPage> {
   }
 
   Future<void> _editBody() async {
+    if (_isInfinite) {
+      _message('无极画布仅支持文本框，不支持正文');
+      return;
+    }
     if ((_page['isNotePage'] as bool?) == false) {
       _message('书籍源页不允许正文文本');
       return;
@@ -720,58 +734,65 @@ class _EditorPageState extends State<EditorPage> {
     );
   }
 
-  Future<void> _onElementTap(Map<String, dynamic> picked) async {
+  void _selectSingleElement(Map<String, dynamic> picked) {
     final id = picked['id'] as String?;
-    Map<String, dynamic>? element;
-    for (final layer in _layers) {
-      for (final value in layer['elements'] as List? ?? const []) {
-        final candidate = value as Map<String, dynamic>;
-        if (candidate['id'] == id) {
-          element = candidate;
-          break;
-        }
-      }
-      if (element != null) break;
-    }
+    if (id == null || _findElement(id) == null) return;
+    _transformOriginals.clear();
+    _transformStartBounds = null;
+    setState(() {
+      _selectedIds
+        ..clear()
+        ..add(id);
+    });
+  }
+
+  Map<String, dynamic>? get _singleSelectedElement {
+    if (_selectedIds.length != 1) return null;
+    return _findElement(_selectedIds.first);
+  }
+
+  bool get _canEditSingleSelection {
+    final element = _singleSelectedElement;
+    final type = element?['type'];
+    return type == 'text' || type == 'image';
+  }
+
+  Future<void> _editSelectedElement() async {
+    final element = _singleSelectedElement;
     if (element == null) return;
     if (element['type'] == 'text') {
       final text = await _markdownDialog(
         element['markdown'] as String? ?? '',
         '编辑文本',
       );
-      if (text == null) return;
+      if (text == null || !mounted) return;
       _mutate(() {
-        element!['markdown'] = text;
+        element['markdown'] = text;
       });
       return;
     }
-    if (element['type'] == 'attachment') {
-      await _showAttachment(element);
+    if (element['type'] != 'image') return;
+    final assetId = element['assetId'] as String?;
+    final image = assetId == null ? null : _images[assetId];
+    if (image == null) {
+      _message('图片尚未加载');
       return;
     }
-    if (element['type'] == 'image') {
-      final assetId = element['assetId'] as String?;
-      final image = assetId == null ? null : _images[assetId];
-      if (image == null) {
-        _message('图片尚未加载');
-        return;
-      }
-      final result = await showImageEditorDialog(
-        context,
-        image: image,
-        element: element,
-      );
-      if (result == null || !mounted) return;
-      _mutate(() {
-        element!['cropLeft'] = result.crop.left;
-        element['cropTop'] = result.crop.top;
-        element['cropRight'] = result.crop.right;
-        element['cropBottom'] = result.crop.bottom;
-        element['rotation'] = result.rotation;
-        element['flipH'] = result.flipH;
-        element['flipV'] = result.flipV;
-      });
-    }
+    final result = await showImageEditorDialog(
+      context,
+      image: image,
+      element: element,
+    );
+    if (result == null || !mounted) return;
+    _mutate(() {
+      element['cropLeft'] = result.crop.left;
+      element['cropTop'] = result.crop.top;
+      element['cropRight'] = result.crop.right;
+      element['cropBottom'] = result.crop.bottom;
+      element['rotation'] = result.rotation;
+      element['flipH'] = result.flipH;
+      element['flipV'] = result.flipV;
+    });
   }
 
   void _onSelection(List<Offset> polygon, bool rectangle) {
@@ -1364,19 +1385,17 @@ class _EditorPageState extends State<EditorPage> {
       lassoRect: _lassoRect,
       viewResetToken: _viewResetToken,
       pageTurnController: pageTurn,
+      zoomNotifier: _zoomNotifier,
       onStroke: _addStroke,
       onErase: _eraseAt,
       onEraseStart: _eraseBegin,
       onEraseEnd: _eraseEnd,
-      onElementTap: (element) {
-        _tool = 'select';
-        setState(() {});
-        _onElementTap(element);
-      },
+      onElementTap: _selectSingleElement,
       onSelection: _onSelection,
       onSelectionMove: _applySelectionMove,
       onSelectionScale: _applySelectionScale,
       onSelectionGestureEnd: _endSelectionTransform,
+      onSelectionCleared: _clearSelection,
     );
     final canvas = isInfinite
         ? buildCanvas(null)
@@ -1423,7 +1442,9 @@ class _EditorPageState extends State<EditorPage> {
 
   Widget _selectionBar(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final single = _singleSelectedElement;
     return Material(
+      key: const ValueKey('selection-bar'),
       color: scheme.secondaryContainer,
       child: SizedBox(
         height: 44,
@@ -1437,6 +1458,20 @@ class _EditorPageState extends State<EditorPage> {
                 scrollDirection: Axis.horizontal,
                 child: Row(
                   children: [
+                    if (_canEditSingleSelection)
+                      IconButton(
+                        key: const ValueKey('selection-edit'),
+                        tooltip: single?['type'] == 'image' ? '编辑图片' : '编辑文本',
+                        onPressed: _editSelectedElement,
+                        icon: const Icon(Icons.edit_outlined, size: 20),
+                      ),
+                    if (single?['type'] == 'attachment')
+                      IconButton(
+                        key: const ValueKey('selection-open-attachment'),
+                        tooltip: '打开附件',
+                        onPressed: () => _showAttachment(single!),
+                        icon: const Icon(Icons.open_in_new, size: 20),
+                      ),
                     TextButton.icon(
                       onPressed: _copySelection,
                       icon: const Icon(Icons.copy_all_outlined, size: 18),
@@ -1452,14 +1487,16 @@ class _EditorPageState extends State<EditorPage> {
                       icon: const Icon(Icons.delete_outline, size: 18),
                       label: const Text('删除'),
                     ),
-                    IconButton(
-                      tooltip: _lassoRect ? '自由套索' : '矩形选择',
-                      onPressed: () => setState(() => _lassoRect = !_lassoRect),
-                      icon: Icon(
-                        _lassoRect ? Icons.crop_square : Icons.gesture,
-                        size: 20,
+                    if (_tool == 'select')
+                      IconButton(
+                        tooltip: _lassoRect ? '自由套索' : '矩形选择',
+                        onPressed: () =>
+                            setState(() => _lassoRect = !_lassoRect),
+                        icon: Icon(
+                          _lassoRect ? Icons.crop_square : Icons.gesture,
+                          size: 20,
+                        ),
                       ),
-                    ),
                     IconButton(
                       tooltip: '取消选择',
                       onPressed: _clearSelection,
@@ -1494,7 +1531,7 @@ class _EditorPageState extends State<EditorPage> {
       child: SizedBox(
         height: 58,
         child: Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 10),
+          padding: const EdgeInsets.symmetric(horizontal: 8),
           child: Row(
             children: [
               IconButton(
@@ -1523,24 +1560,32 @@ class _EditorPageState extends State<EditorPage> {
                   ),
                 ),
               ),
-              status,
-              const SizedBox(width: 8),
-              IconButton(
-                tooltip: '撤销',
-                visualDensity: VisualDensity.compact,
-                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                padding: EdgeInsets.zero,
-                onPressed: _undo.isEmpty ? null : _undoLast,
-                icon: const Icon(Icons.undo),
-              ),
-              IconButton(
-                tooltip: '重做',
-                visualDensity: VisualDensity.compact,
-                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
-                padding: EdgeInsets.zero,
-                onPressed: _redo.isEmpty ? null : _redoLast,
-                icon: const Icon(Icons.redo),
-              ),
+              if (!compact) status,
+              if (!compact) ...[
+                const SizedBox(width: 8),
+                IconButton(
+                  tooltip: '撤销',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(
+                    minWidth: 36,
+                    minHeight: 36,
+                  ),
+                  padding: EdgeInsets.zero,
+                  onPressed: _undo.isEmpty ? null : _undoLast,
+                  icon: const Icon(Icons.undo),
+                ),
+                IconButton(
+                  tooltip: '重做',
+                  visualDensity: VisualDensity.compact,
+                  constraints: const BoxConstraints(
+                    minWidth: 36,
+                    minHeight: 36,
+                  ),
+                  padding: EdgeInsets.zero,
+                  onPressed: _redo.isEmpty ? null : _redoLast,
+                  icon: const Icon(Icons.redo),
+                ),
+              ],
               if (_tool == 'eraser')
                 PopupMenuButton<String>(
                   tooltip: '橡皮设置',
@@ -1674,13 +1719,14 @@ class _EditorPageState extends State<EditorPage> {
   Widget _toolRail(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
     final tools = <(String, IconData, String)>[
-      ('select', Icons.near_me_outlined, '选择'),
+      ('pointer', Icons.near_me_outlined, '指针'),
+      ('select', Icons.gesture, '框选'),
       ('hand', Icons.pan_tool_outlined, '移动'),
       ('pen', Icons.edit_outlined, '笔'),
       ('highlighter', Icons.brush_outlined, '荧光笔'),
       ('eraser', Icons.auto_fix_normal, '橡皮'),
       ('text', Icons.title, '文本框'),
-      ('body', Icons.notes, '正文'),
+      if (!_isInfinite) ('body', Icons.notes, '正文'),
       ('image', Icons.image_outlined, '图片'),
       ('attachment', Icons.attach_file, '附件'),
     ];
@@ -1719,7 +1765,9 @@ class _EditorPageState extends State<EditorPage> {
                           } else {
                             setState(() {
                               _tool = tool.$1;
-                              if (_tool != 'select') _selectedIds.clear();
+                              if (_tool != 'pointer' && _tool != 'select') {
+                                _selectedIds.clear();
+                              }
                               if (_tool == 'highlighter') _width = 14;
                               if (_tool == 'pen') _width = 2.5;
                             });
@@ -1931,7 +1979,9 @@ class _EditorPageState extends State<EditorPage> {
                 style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
               ),
             ],
-            const SizedBox(width: 16),
+            const SizedBox(width: 4),
+            _ZoomIndicator(notifier: _zoomNotifier),
+            const SizedBox(width: 8),
           ],
         ),
       ),
@@ -1954,10 +2004,40 @@ class _EditorPageState extends State<EditorPage> {
         pages: pages,
         currentIndex: _pageIndex,
         onSelect: (index) => Navigator.pop(context, index),
+        loadThumbnail: _thumbnailForPage,
+        cachedThumbnail: _pageThumbnails.peek,
       ),
     );
     if (selected != null && selected != _pageIndex && mounted) {
       await _setPage(selected);
+    }
+  }
+
+  Future<Uint8List?> _thumbnailForPage(Map<String, dynamic> page) {
+    final pageId = page['id'] as String? ?? '${page.hashCode}';
+    return _pageThumbnails.load(pageId, () => _renderPageThumbnail(page));
+  }
+
+  Future<Uint8List?> _renderPageThumbnail(Map<String, dynamic> page) async {
+    final doc = _doc;
+    if (doc == null) return null;
+    final size = pagedPageSize(doc, page);
+    final longest = math.max(size.width, size.height);
+    final pixelRatio = (300 / math.max(1.0, longest)).clamp(0.05, 0.5);
+    final images = await _imagesForPage(page);
+    try {
+      return await renderPagePng(
+        document: doc,
+        page: page,
+        images: images,
+        pixelRatio: pixelRatio,
+      );
+    } catch (_) {
+      return null;
+    } finally {
+      for (final image in images.values) {
+        image.dispose();
+      }
     }
   }
 
@@ -1976,6 +2056,41 @@ class _EditorPageState extends State<EditorPage> {
       return 'text/markdown';
     }
     return 'application/octet-stream';
+  }
+}
+
+class _ZoomIndicator extends StatelessWidget {
+  const _ZoomIndicator({required this.notifier});
+
+  final ValueNotifier<double> notifier;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    return Tooltip(
+      message: '缩放比例',
+      child: ValueListenableBuilder<double>(
+        valueListenable: notifier,
+        builder: (context, zoom, child) {
+          final percent = (zoom * 100).round();
+          return SizedBox(
+            width: 42,
+            child: Text(
+              '$percent%',
+              key: const ValueKey('zoom-percentage'),
+              textAlign: TextAlign.right,
+              maxLines: 1,
+              overflow: TextOverflow.clip,
+              style: TextStyle(
+                fontSize: 12,
+                fontFeatures: const [ui.FontFeature.tabularFigures()],
+                color: scheme.onSurfaceVariant,
+              ),
+            ),
+          );
+        },
+      ),
+    );
   }
 }
 
@@ -2161,12 +2276,16 @@ class _PagePickerSheet extends StatelessWidget {
     required this.pages,
     required this.currentIndex,
     required this.onSelect,
+    required this.loadThumbnail,
+    this.cachedThumbnail,
   });
 
   final Map<String, dynamic> document;
   final List<Map<String, dynamic>> pages;
   final int currentIndex;
   final ValueChanged<int> onSelect;
+  final Future<Uint8List?> Function(Map<String, dynamic> page) loadThumbnail;
+  final Uint8List? Function(String pageId)? cachedThumbnail;
 
   @override
   Widget build(BuildContext context) {
@@ -2194,7 +2313,7 @@ class _PagePickerSheet extends StatelessWidget {
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 20),
             child: Text(
-              '轻量页面卡片，非实时缩略图。点击卡片跳转。',
+              '页面缩略图按需生成；加载时显示纸张占位。点击卡片跳转。',
               style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
             ),
           ),
@@ -2215,6 +2334,10 @@ class _PagePickerSheet extends StatelessWidget {
                 document: document,
                 selected: index == currentIndex,
                 onTap: () => onSelect(index),
+                loadThumbnail: () => loadThumbnail(pages[index]),
+                cachedBytes: cachedThumbnail?.call(
+                  pages[index]['id'] as String? ?? '',
+                ),
               ),
             ),
           ),
@@ -2231,6 +2354,8 @@ class _PagePickerCard extends StatelessWidget {
     required this.document,
     required this.selected,
     required this.onTap,
+    required this.loadThumbnail,
+    this.cachedBytes,
   });
 
   final int index;
@@ -2238,6 +2363,8 @@ class _PagePickerCard extends StatelessWidget {
   final Map<String, dynamic> document;
   final bool selected;
   final VoidCallback onTap;
+  final Future<Uint8List?> Function() loadThumbnail;
+  final Uint8List? cachedBytes;
 
   @override
   Widget build(BuildContext context) {
@@ -2252,6 +2379,11 @@ class _PagePickerCard extends StatelessWidget {
         paper['background'] as String? ??
         'blank';
     final sourceIndex = (page['sourceIndex'] as num?)?.toInt();
+    final pageSize = pagedPageSize(document, page);
+    final aspectRatio = pageSize.height <= 0
+        ? 1.0
+        : pageSize.width / pageSize.height;
+    final pageId = page['id'] as String? ?? '$index';
     return Material(
       key: ValueKey('page-card-$index'),
       color: selected
@@ -2315,15 +2447,17 @@ class _PagePickerCard extends StatelessWidget {
               ),
               const SizedBox(height: 5),
               Expanded(
-                child: Container(
-                  decoration: BoxDecoration(
-                    color: const Color(0xFFFFFCF5),
-                    border: Border.all(color: const Color(0xFFE0D6C7)),
-                    borderRadius: BorderRadius.circular(4),
-                  ),
-                  clipBehavior: Clip.antiAlias,
-                  child: CustomPaint(
-                    painter: _PagePickerPaperPainter(background: background),
+                child: Center(
+                  child: PageThumbnail(
+                    key: ValueKey('page-thumbnail-$index'),
+                    pageId: pageId,
+                    aspectRatio: aspectRatio,
+                    load: loadThumbnail,
+                    cachedBytes: cachedBytes,
+                    placeholder: CustomPaint(
+                      key: ValueKey('page-thumbnail-placeholder-$index'),
+                      painter: _PagePickerPaperPainter(background: background),
+                    ),
                   ),
                 ),
               ),

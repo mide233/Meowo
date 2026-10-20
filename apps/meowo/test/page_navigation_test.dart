@@ -7,6 +7,7 @@ import 'package:meowo/canvas_view.dart';
 import 'package:meowo/core/meowo_core.dart';
 import 'package:meowo/editor_page.dart';
 import 'package:meowo/library_page.dart';
+import 'package:meowo/page_thumbnail.dart';
 
 void main() {
   testWidgets('page count opens cards and jumps to a page', (tester) async {
@@ -42,6 +43,7 @@ void main() {
     expect(find.text('当前第 3 / 3 页'), findsOneWidget);
     expect(find.text('当前'), findsOneWidget);
     expect(find.byKey(const ValueKey('page-card-0')), findsOneWidget);
+    expect(find.byType(PageThumbnail), findsNWidgets(3));
 
     await tester.tap(find.byKey(const ValueKey('page-card-0')));
     await tester.pumpAndSettle();

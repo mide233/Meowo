@@ -31,8 +31,10 @@ class CanvasView extends StatefulWidget {
     required this.onSelectionMove,
     required this.onSelectionScale,
     required this.onSelectionGestureEnd,
+    this.onSelectionCleared,
     this.pageTurnController,
     this.viewResetToken = 0,
+    this.zoomNotifier,
   });
 
   final Map<String, dynamic> document;
@@ -59,6 +61,14 @@ class CanvasView extends StatefulWidget {
   final void Function(Offset delta) onSelectionMove;
   final void Function(Rect bounds) onSelectionScale;
   final VoidCallback onSelectionGestureEnd;
+
+  /// Called by the pointer tool when a tap does not hit an element.
+  final VoidCallback? onSelectionCleared;
+
+  /// Optional live zoom notifier. Values are relative zoom for paged/book
+  /// documents (1.0 = fit) and absolute scale for infinite documents
+  /// (1.0 = 100%).
+  final ValueNotifier<double>? zoomNotifier;
 
   /// Optional album-style page-turn controller. Only active for paged/book
   /// documents at fit zoom with the hand tool; null disables page turning.
@@ -178,6 +188,25 @@ class CanvasViewState extends State<CanvasView> {
 
   bool get _isInfinite => widget.document['kind'] == 'infinite';
 
+  bool _zoomPublishScheduled = false;
+
+  /// Current relative zoom for paged/book documents, absolute scale for
+  /// infinite documents.
+  double get zoom => _zoom;
+
+  void _scheduleZoomPublish() {
+    final notifier = widget.zoomNotifier;
+    if (notifier == null) return;
+    if ((notifier.value - _zoom).abs() < 0.000001) return;
+    if (_zoomPublishScheduled) return;
+    _zoomPublishScheduled = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _zoomPublishScheduled = false;
+      if (!mounted) return;
+      widget.zoomNotifier?.value = _zoom;
+    });
+  }
+
   Rect get _pagePixelRect => Rect.fromLTWH(
     _offset.dx,
     _offset.dy,
@@ -283,6 +312,7 @@ class CanvasViewState extends State<CanvasView> {
           _lastScale = _zoom.clamp(kInfiniteMinZoom, kInfiniteMaxZoom);
           _zoom = _lastScale;
           _offset = _clampInfiniteOffset(_offset, _lastScale);
+          _scheduleZoomPublish();
           return SizedBox(
             width: viewport.width,
             height: viewport.height,
@@ -300,7 +330,7 @@ class CanvasViewState extends State<CanvasView> {
                   onPointerCancel: (event) => _cancel(event.pointer),
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
-                    onTapUp: widget.tool == 'select' ? _onTapUp : null,
+                    onTapUp: widget.tool == 'pointer' ? _onTapUp : null,
                     child: CustomPaint(
                       key: const ValueKey('meowo-canvas'),
                       size: viewport,
@@ -325,6 +355,7 @@ class CanvasViewState extends State<CanvasView> {
             widget.tool == 'hand' && _atFitZoom;
         final scale = fitScale * _zoom;
         _lastScale = scale;
+        _scheduleZoomPublish();
         final canvasSize = Size(width * scale, height * scale);
         return SizedBox(
           width: viewport.width,
@@ -361,7 +392,7 @@ class CanvasViewState extends State<CanvasView> {
                         ),
                         child: GestureDetector(
                           behavior: HitTestBehavior.opaque,
-                          onTapUp: widget.tool == 'select' ? _onTapUp : null,
+                          onTapUp: widget.tool == 'pointer' ? _onTapUp : null,
                           child: CustomPaint(
                             key: const ValueKey('meowo-canvas'),
                             size: canvasSize,
@@ -547,6 +578,10 @@ class CanvasViewState extends State<CanvasView> {
       return;
     }
     final point = _toPage(event.localPosition);
+    if (widget.tool == 'pointer') {
+      _pointerDown(point);
+      return;
+    }
     if (widget.tool == 'select') {
       _selectDown(point);
       return;
@@ -623,6 +658,10 @@ class CanvasViewState extends State<CanvasView> {
       return;
     }
     final point = _toPage(event.localPosition);
+    if (widget.tool == 'pointer') {
+      _selectMove(point, _lastScale);
+      return;
+    }
     if (widget.tool == 'select') {
       _selectMove(point, _lastScale);
       return;
@@ -670,7 +709,7 @@ class CanvasViewState extends State<CanvasView> {
       return;
     }
     final point = _toPage(event.localPosition);
-    if (widget.tool == 'select') {
+    if (widget.tool == 'pointer' || widget.tool == 'select') {
       _selectUp(point, _lastScale);
       return;
     }
@@ -772,29 +811,39 @@ class CanvasViewState extends State<CanvasView> {
     }
   }
 
-  void _selectDown(Offset point) {
+  bool _beginSelectionTransform(Offset point) {
     final bounds = widget.selectionBounds;
-    if (bounds != null) {
-      final handle = _hitHandle(point, bounds);
-      if (handle >= 0) {
-        setState(() {
-          _selecting = true;
-          _selectGesture = 'scale';
-          _scaleHandle = handle;
-          _scaleStartBounds = bounds;
-        });
-        return;
-      }
-      final tolerance = 8 / _lastScale;
-      if (bounds.inflate(tolerance).contains(point)) {
-        setState(() {
-          _selecting = true;
-          _selectGesture = 'move';
-          _selectStart = point;
-        });
-        return;
-      }
+    if (bounds == null) return false;
+    final handle = _hitHandle(point, bounds);
+    if (handle >= 0) {
+      setState(() {
+        _selecting = true;
+        _selectGesture = 'scale';
+        _scaleHandle = handle;
+        _scaleStartBounds = bounds;
+      });
+      return true;
     }
+    final tolerance = 8 / _lastScale;
+    if (bounds.inflate(tolerance).contains(point)) {
+      setState(() {
+        _selecting = true;
+        _selectGesture = 'move';
+        _selectStart = point;
+      });
+      return true;
+    }
+    return false;
+  }
+
+  /// Pointer tool: taps select a single object; dragging an existing selection
+  /// moves it or its corner handles. Blank drags do not start a lasso.
+  void _pointerDown(Offset point) {
+    _beginSelectionTransform(point);
+  }
+
+  void _selectDown(Offset point) {
+    if (_beginSelectionTransform(point)) return;
     setState(() {
       _selecting = true;
       _selectGesture = 'lasso';
@@ -951,7 +1000,7 @@ class CanvasViewState extends State<CanvasView> {
       _eraseLast = null;
       widget.onEraseEnd();
     }
-    if (widget.tool == 'select') {
+    if (widget.tool == 'pointer' || widget.tool == 'select') {
       _resetSelectionGesture();
     }
     setState(() {
@@ -968,7 +1017,6 @@ class CanvasViewState extends State<CanvasView> {
   }
 
   void _onTapUp(TapUpDetails details) {
-    if (widget.selectionIds.isNotEmpty) return;
     final point = _isInfinite
         ? _toPage(details.localPosition)
         : details.localPosition / _lastScale;
@@ -986,6 +1034,11 @@ class CanvasViewState extends State<CanvasView> {
         }
       }
     }
+    final bounds = widget.selectionBounds;
+    if (bounds != null && _hitHandle(point, bounds) >= 0) {
+      return;
+    }
+    widget.onSelectionCleared?.call();
   }
 
   Rect _elementRect(Map<String, dynamic> element) {
@@ -1100,7 +1153,9 @@ class MeowoCanvasPainter extends CustomPainter {
 
   void _paintBodyAndLayers(Canvas canvas, {Rect? visibleWorld}) {
     final body = page['body'];
-    if (body is Map) {
+    // Infinite documents render text boxes only. Legacy body data is kept in
+    // the document but must not appear on the canvas.
+    if (document['kind'] != 'infinite' && body is Map) {
       final element = Map<String, dynamic>.from(body);
       if (visibleWorld == null ||
           _isElementVisible(element, visibleWorld, isBody: true)) {

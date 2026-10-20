@@ -15,7 +15,7 @@ void main() {
     'paper': {'width': pageSize, 'height': pageSize, 'background': 'blank'},
   };
 
-  Map<String, dynamic> page() => {
+  Map<String, dynamic> page({List<dynamic> elements = const []}) => {
     'id': 'page_selection',
     'width': pageSize,
     'height': pageSize,
@@ -25,7 +25,7 @@ void main() {
         'visible': true,
         'locked': false,
         'opacity': 1.0,
-        'elements': <dynamic>[],
+        'elements': elements,
       },
     ],
   };
@@ -36,7 +36,10 @@ void main() {
     required Rect? selectionBounds,
     required bool lassoRect,
     String tool = 'select',
+    List<dynamic> elements = const [],
     void Function(List<Offset>, bool)? onSelection,
+    void Function(Map<String, dynamic>)? onElementTap,
+    void Function()? onSelectionCleared,
     void Function(Offset)? onMove,
     void Function(Rect)? onScale,
   }) async {
@@ -47,7 +50,7 @@ void main() {
         home: Scaffold(
           body: CanvasView(
             document: document(),
-            page: page(),
+            page: page(elements: elements),
             tool: tool,
             color: Colors.black,
             width: 2,
@@ -60,12 +63,13 @@ void main() {
             onErase: (_) {},
             onEraseStart: () {},
             onEraseEnd: () {},
-            onElementTap: (_) {},
+            onElementTap: (element) => onElementTap?.call(element),
             onSelection: (polygon, rectangle) =>
                 onSelection?.call(polygon, rectangle),
             onSelectionMove: (delta) => onMove?.call(delta),
             onSelectionScale: (bounds) => onScale?.call(bounds),
             onSelectionGestureEnd: () {},
+            onSelectionCleared: onSelectionCleared,
           ),
         ),
       ),
@@ -82,6 +86,112 @@ void main() {
     );
     return (point) => origin + point * scale;
   }
+
+  Map<String, dynamic> textElement() => {
+    'id': 'text_1',
+    'type': 'text',
+    'x': 100.0,
+    'y': 100.0,
+    'w': 160.0,
+    'h': 80.0,
+    'markdown': 'hello',
+    'fontSize': 16.0,
+    'lineHeight': 1.5,
+    'color': '#222222',
+  };
+
+  testWidgets('pointer tool selects one element on tap', (tester) async {
+    String? tapped;
+    final toGlobal = await pumpCanvas(
+      tester,
+      selectionIds: const {},
+      selectionBounds: null,
+      lassoRect: false,
+      tool: 'pointer',
+      elements: [textElement()],
+      onElementTap: (element) => tapped = element['id'] as String?,
+    );
+    await tester.tapAt(toGlobal(const Offset(180, 140)));
+    await tester.pumpAndSettle();
+    expect(tapped, 'text_1');
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('selection tool tap does not directly pick an element', (
+    tester,
+  ) async {
+    String? tapped;
+    final toGlobal = await pumpCanvas(
+      tester,
+      selectionIds: const {},
+      selectionBounds: null,
+      lassoRect: false,
+      tool: 'select',
+      elements: [textElement()],
+      onElementTap: (element) => tapped = element['id'] as String?,
+    );
+    await tester.tapAt(toGlobal(const Offset(180, 140)));
+    await tester.pumpAndSettle();
+    expect(tapped, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('pointer blank drag does not start a lasso selection', (
+    tester,
+  ) async {
+    List<Offset>? polygon;
+    final toGlobal = await pumpCanvas(
+      tester,
+      selectionIds: const {},
+      selectionBounds: null,
+      lassoRect: false,
+      tool: 'pointer',
+      onSelection: (points, _) => polygon = points,
+    );
+    await tester.dragFrom(
+      toGlobal(const Offset(300, 300)),
+      const Offset(80, 60),
+    );
+    await tester.pumpAndSettle();
+    expect(polygon, isNull);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('pointer blank tap clears the current selection', (tester) async {
+    var cleared = 0;
+    final toGlobal = await pumpCanvas(
+      tester,
+      selectionIds: const {'text_1'},
+      selectionBounds: const Rect.fromLTWH(100, 100, 160, 80),
+      lassoRect: false,
+      tool: 'pointer',
+      elements: [textElement()],
+      onSelectionCleared: () => cleared += 1,
+    );
+    await tester.tapAt(toGlobal(const Offset(400, 400)));
+    await tester.pumpAndSettle();
+    expect(cleared, 1);
+  });
+
+  testWidgets('pointer tool drags a selected object', (tester) async {
+    Offset? delta;
+    final toGlobal = await pumpCanvas(
+      tester,
+      selectionIds: const {'text_1'},
+      selectionBounds: const Rect.fromLTWH(100, 100, 160, 80),
+      lassoRect: false,
+      tool: 'pointer',
+      elements: [textElement()],
+      onMove: (value) => delta = value,
+    );
+    final start = toGlobal(const Offset(160, 140));
+    final end = toGlobal(const Offset(185, 170));
+    await tester.dragFrom(start, end - start);
+    await tester.pumpAndSettle();
+    expect(delta, isNotNull);
+    expect(delta!.dx, closeTo(25, 1.5));
+    expect(delta!.dy, closeTo(30, 1.5));
+  });
 
   testWidgets('rectangle lasso reports page-space polygon', (tester) async {
     List<Offset>? polygon;
