@@ -32,6 +32,7 @@ class EditorPage extends StatefulWidget {
 
 class _EditorPageState extends State<EditorPage> {
   final _canvasKey = GlobalKey();
+  final _canvasViewKey = GlobalKey<CanvasViewState>();
   final _undo = <String>[];
   final _redo = <String>[];
   final _images = <String, ui.Image>{};
@@ -64,6 +65,11 @@ class _EditorPageState extends State<EditorPage> {
 
   AppState get state => widget.state;
   Map<String, dynamic>? get _doc => state.activeDocument;
+  bool get _isInfinite => _doc?['kind'] == 'infinite';
+
+  Offset _insertionCenter() {
+    return _canvasViewKey.currentState?.visibleWorldCenter ?? Offset.zero;
+  }
 
   Map<String, dynamic> get _page {
     final pages = _doc!['pages'] as List;
@@ -543,13 +549,18 @@ class _EditorPageState extends State<EditorPage> {
     final layer = _editableLayer();
     if (layer == null) return;
     final pageWidth = (_page['width'] as num?)?.toDouble() ?? 595;
+    final infinite = _isInfinite;
+    final width = infinite ? 360.0 : (pageWidth - 128).clamp(160.0, 360.0);
+    final center = infinite ? _insertionCenter() : Offset.zero;
+    final x = infinite ? center.dx - width / 2 : 64.0;
+    final y = infinite ? center.dy - 80.0 : 64.0;
     _mutate(() {
       (layer['elements'] as List).add({
         'id': 'text_${DateTime.now().microsecondsSinceEpoch}',
         'type': 'text',
-        'x': 64.0,
-        'y': 64.0,
-        'w': (pageWidth - 128).clamp(160.0, 360.0),
+        'x': x,
+        'y': y,
+        'w': width,
         'h': 160.0,
         'markdown': text,
         'fontSize': 16.0,
@@ -583,8 +594,8 @@ class _EditorPageState extends State<EditorPage> {
         'layoutMode': 'body',
         'x': 48.0,
         'y': 48.0,
-        'w': _doc!['kind'] == 'infinite' ? 720.0 : pageWidth - 96,
-        'h': pageHeight - 96,
+        'w': _isInfinite ? 720.0 : pageWidth - 96,
+        'h': _isInfinite ? 1600.0 : pageHeight - 96,
         'markdown': text,
         'fontSize': 16.0,
         'lineHeight': 1.5,
@@ -611,15 +622,21 @@ class _EditorPageState extends State<EditorPage> {
     final layer = _editableLayer();
     if (layer == null) return;
     final pageWidth = (_page['width'] as num?)?.toDouble() ?? 595;
-    final targetWidth = (pageWidth * 0.55).clamp(120.0, 420.0);
+    final infinite = _isInfinite;
+    final targetWidth = infinite
+        ? 360.0
+        : (pageWidth * 0.55).clamp(120.0, 420.0);
     final targetHeight = targetWidth * image.height / image.width;
+    final center = infinite ? _insertionCenter() : Offset.zero;
     _mutate(() {
       (layer['elements'] as List).add({
         'id': 'image_${DateTime.now().microsecondsSinceEpoch}',
         'type': 'image',
         'assetId': asset['id'],
-        'x': (pageWidth - targetWidth) / 2,
-        'y': 80.0,
+        'x': infinite
+            ? center.dx - targetWidth / 2
+            : (pageWidth - targetWidth) / 2,
+        'y': infinite ? center.dy - targetHeight / 2 : 80.0,
         'w': targetWidth,
         'h': targetHeight,
         'cropLeft': 0.0,
@@ -646,6 +663,9 @@ class _EditorPageState extends State<EditorPage> {
     );
     final layer = _editableLayer();
     if (layer == null) return;
+    final center = _isInfinite
+        ? _insertionCenter() - const Offset(130, 26)
+        : const Offset(64, 120);
     _mutate(() {
       (layer['elements'] as List).add({
         'id': 'attachment_${DateTime.now().microsecondsSinceEpoch}',
@@ -654,8 +674,8 @@ class _EditorPageState extends State<EditorPage> {
         'name': asset['name'],
         'mime': asset['mime'],
         'size': asset['size'],
-        'x': 64.0,
-        'y': 120.0,
+        'x': center.dx,
+        'y': center.dy,
         'w': 260.0,
         'h': 52.0,
         'opacity': 1.0,
@@ -1164,18 +1184,37 @@ class _EditorPageState extends State<EditorPage> {
         final page = pages[index] as Map<String, dynamic>;
         final images = await _imagesForPage(page);
         try {
-          final width = (page['width'] as num?)?.toDouble() ?? 595.276;
-          final height = (page['height'] as num?)?.toDouble() ?? 841.89;
-          final png = await renderPagePng(
-            document: doc,
-            page: page,
-            images: images,
-            pixelRatio: 2.0,
-          );
+          final Uint8List png;
+          final Size pageSize;
+          if (doc['kind'] == 'infinite') {
+            final region = infiniteContentBounds(page);
+            png = await renderInfiniteCanvasPng(
+              document: doc,
+              page: page,
+              images: images,
+              region: region,
+              pixelRatio: 2.0,
+            );
+            pageSize = _pdfPageSize(region.size);
+          } else {
+            final width = (page['width'] as num?)?.toDouble() ?? 595.276;
+            final height = (page['height'] as num?)?.toDouble() ?? 841.89;
+            png = await renderPagePng(
+              document: doc,
+              page: page,
+              images: images,
+              pixelRatio: 2.0,
+            );
+            pageSize = Size(width, height);
+          }
           final image = pw.MemoryImage(png);
           pdf.addPage(
             pw.Page(
-              pageFormat: PdfPageFormat(width, height, marginAll: 0),
+              pageFormat: PdfPageFormat(
+                pageSize.width,
+                pageSize.height,
+                marginAll: 0,
+              ),
               build: (context) => pw.Image(image, fit: pw.BoxFit.fill),
             ),
           );
@@ -1187,10 +1226,22 @@ class _EditorPageState extends State<EditorPage> {
       }
       final bytes = await pdf.save();
       await File(location.path).writeAsBytes(bytes);
-      _message('PDF 已导出（${indexes.length} 页）');
+      _message(
+        doc['kind'] == 'infinite'
+            ? 'PDF 已导出（无极画布按内容裁切）'
+            : 'PDF 已导出（${indexes.length} 页）',
+      );
     } catch (error) {
       _message('PDF 导出失败: $error', error: true);
     }
+  }
+
+  Size _pdfPageSize(Size size) {
+    const maxSide = 14400.0;
+    final longest = size.width > size.height ? size.width : size.height;
+    if (longest <= maxSide) return size;
+    final factor = maxSide / longest;
+    return Size(size.width * factor, size.height * factor);
   }
 
   Future<Map<String, ui.Image>> _imagesForPage(
@@ -1224,6 +1275,32 @@ class _EditorPageState extends State<EditorPage> {
 
   Future<void> _exportPng() async {
     try {
+      final doc = _doc;
+      if (doc == null) return;
+      final infinite = doc['kind'] == 'infinite';
+      final title = (doc['title'] as String? ?? '未命名').replaceAll(
+        RegExp(r'[\\/:*?"<>|]'),
+        '_',
+      );
+      final location = await getSaveLocation(
+        suggestedName: infinite
+            ? '$title-canvas.png'
+            : '$title-page-${_pageIndex + 1}.png',
+      );
+      if (location == null) return;
+      if (infinite) {
+        final region = infiniteContentBounds(_page);
+        final png = await renderInfiniteCanvasPng(
+          document: doc,
+          page: _page,
+          images: _images,
+          region: region,
+          pixelRatio: 2.0,
+        );
+        await File(location.path).writeAsBytes(png);
+        _message('已导出 PNG（按内容裁切）');
+        return;
+      }
       final boundary =
           _canvasKey.currentContext?.findRenderObject()
               as RenderRepaintBoundary?;
@@ -1232,14 +1309,6 @@ class _EditorPageState extends State<EditorPage> {
       final data = await image.toByteData(format: ui.ImageByteFormat.png);
       image.dispose();
       if (data == null) return;
-      final title = (_doc!['title'] as String? ?? '未命名').replaceAll(
-        RegExp(r'[\\/:*?"<>|]'),
-        '_',
-      );
-      final location = await getSaveLocation(
-        suggestedName: '$title-page-${_pageIndex + 1}.png',
-      );
-      if (location == null) return;
       await File(location.path).writeAsBytes(data.buffer.asUint8List());
       _message('已导出 PNG');
     } catch (error) {
@@ -1256,6 +1325,38 @@ class _EditorPageState extends State<EditorPage> {
     final wide = media.width >= 1040;
     final compact = media.width < 760;
     final isInfinite = _doc!['kind'] == 'infinite';
+    final canvas = CanvasView(
+      // Infinite documents do not need a page-slide transition. Keeping the
+      // canvas outside the transition also prevents the outgoing page and the
+      // incoming page from holding the same GlobalKey during the 240 ms
+      // animation.
+      key: isInfinite ? _canvasViewKey : null,
+      document: _doc!,
+      page: _page,
+      tool: _tool,
+      color: _color,
+      width: _width,
+      activeLayerId: _activeLayerId ?? '',
+      images: _images,
+      selectionIds: _selectedIds,
+      selectionBounds: _selectionBounds,
+      lassoRect: _lassoRect,
+      viewResetToken: _viewResetToken,
+      onPageSwipe: isInfinite ? null : _swipePage,
+      onStroke: _addStroke,
+      onErase: _eraseAt,
+      onEraseStart: _eraseBegin,
+      onEraseEnd: _eraseEnd,
+      onElementTap: (element) {
+        _tool = 'select';
+        setState(() {});
+        _onElementTap(element);
+      },
+      onSelection: _onSelection,
+      onSelectionMove: _applySelectionMove,
+      onSelectionScale: _applySelectionScale,
+      onSelectionGestureEnd: _endSelectionTransform,
+    );
     return Column(
       children: [
         _topBar(context, wide, compact),
@@ -1268,37 +1369,13 @@ class _EditorPageState extends State<EditorPage> {
                   color: Theme.of(context).colorScheme.surfaceContainerLowest,
                   child: RepaintBoundary(
                     key: _canvasKey,
-                    child: _PageSlideTransition(
-                      pageKey: _page['id'] as String? ?? _pageIndex,
-                      direction: _pageSlideDirection,
-                      child: CanvasView(
-                        document: _doc!,
-                        page: _page,
-                        tool: _tool,
-                        color: _color,
-                        width: _width,
-                        activeLayerId: _activeLayerId ?? '',
-                        images: _images,
-                        selectionIds: _selectedIds,
-                        selectionBounds: _selectionBounds,
-                        lassoRect: _lassoRect,
-                        viewResetToken: _viewResetToken,
-                        onPageSwipe: isInfinite ? null : _swipePage,
-                        onStroke: _addStroke,
-                        onErase: _eraseAt,
-                        onEraseStart: _eraseBegin,
-                        onEraseEnd: _eraseEnd,
-                        onElementTap: (element) {
-                          _tool = 'select';
-                          setState(() {});
-                          _onElementTap(element);
-                        },
-                        onSelection: _onSelection,
-                        onSelectionMove: _applySelectionMove,
-                        onSelectionScale: _applySelectionScale,
-                        onSelectionGestureEnd: _endSelectionTransform,
-                      ),
-                    ),
+                    child: isInfinite
+                        ? canvas
+                        : _PageSlideTransition(
+                            pageKey: _page['id'] as String? ?? _pageIndex,
+                            direction: _pageSlideDirection,
+                            child: canvas,
+                          ),
                   ),
                 ),
               ),
@@ -1642,15 +1719,42 @@ class _EditorPageState extends State<EditorPage> {
                 ),
               ),
             ),
-            IconButton(
-              tooltip: '适应页面',
-              onPressed: () => setState(() => _viewResetToken++),
-              icon: const Icon(Icons.fit_screen_outlined),
-            ),
+            if (_isInfinite) ...[
+              IconButton(
+                key: const ValueKey('infinite-reset-origin'),
+                tooltip: '回到原点',
+                onPressed: _resetInfiniteOrigin,
+                icon: const Icon(Icons.my_location_outlined),
+              ),
+              IconButton(
+                key: const ValueKey('infinite-fit-content'),
+                tooltip: '适应内容',
+                onPressed: _fitInfiniteContent,
+                icon: const Icon(Icons.fit_screen_outlined),
+              ),
+            ] else
+              IconButton(
+                tooltip: '适应页面',
+                onPressed: () => setState(() => _viewResetToken++),
+                icon: const Icon(Icons.fit_screen_outlined),
+              ),
           ],
         ),
       ),
     );
+  }
+
+  void _resetInfiniteOrigin() {
+    _canvasViewKey.currentState?.resetToOrigin();
+    setState(() {});
+  }
+
+  void _fitInfiniteContent() {
+    final fitted = _canvasViewKey.currentState?.fitContent() ?? false;
+    if (!fitted) {
+      _message('画布暂无可适应内容，已回到原点');
+    }
+    setState(() {});
   }
 
   Future<void> _chooseColor() async {
@@ -1723,11 +1827,14 @@ class _EditorPageState extends State<EditorPage> {
         child: Row(
           children: [
             const SizedBox(width: 12),
-            IconButton(
-              tooltip: '上一页',
-              onPressed: _pageIndex > 0 ? () => _setPage(_pageIndex - 1) : null,
-              icon: const Icon(Icons.chevron_left),
-            ),
+            if (!isInfinite)
+              IconButton(
+                tooltip: '上一页',
+                onPressed: _pageIndex > 0
+                    ? () => _setPage(_pageIndex - 1)
+                    : null,
+                icon: const Icon(Icons.chevron_left),
+              ),
             if (isInfinite)
               const Padding(
                 padding: EdgeInsets.symmetric(horizontal: 8),
@@ -1756,13 +1863,14 @@ class _EditorPageState extends State<EditorPage> {
                   ),
                 ),
               ),
-            IconButton(
-              tooltip: '下一页',
-              onPressed: _pageIndex + 1 < pages.length
-                  ? () => _setPage(_pageIndex + 1)
-                  : null,
-              icon: const Icon(Icons.chevron_right),
-            ),
+            if (!isInfinite)
+              IconButton(
+                tooltip: '下一页',
+                onPressed: _pageIndex + 1 < pages.length
+                    ? () => _setPage(_pageIndex + 1)
+                    : null,
+                icon: const Icon(Icons.chevron_right),
+              ),
             if (!isInfinite) ...[
               const SizedBox(width: 10),
               IconButton(
@@ -1785,7 +1893,9 @@ class _EditorPageState extends State<EditorPage> {
             if (!compact) ...[
               const SizedBox(width: 16),
               Text(
-                '${(_page['width'] as num?)?.toStringAsFixed(0)} × ${(_page['height'] as num?)?.toStringAsFixed(0)} pt',
+                isInfinite
+                    ? '原点 0,0 · 逻辑范围 ±100,000 pt'
+                    : '${(_page['width'] as num?)?.toStringAsFixed(0)} × ${(_page['height'] as num?)?.toStringAsFixed(0)} pt',
                 style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
               ),
             ],

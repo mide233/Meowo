@@ -10,6 +10,90 @@ const List<Offset> kDefaultPressureCurve = <Offset>[
   Offset(1.0, 1.0),
 ];
 
+/// Logical bounds for an infinite canvas (Q-038: about +/-100,000 pt).
+///
+/// The document origin remains `(0, 0)`; content may be placed on either side
+/// of it. Panning is clamped so that the viewport stays inside these bounds.
+const Rect kInfiniteCanvasBounds = Rect.fromLTRB(
+  -100000,
+  -100000,
+  100000,
+  100000,
+);
+
+/// Fallback export region for an empty infinite canvas.
+const Rect kInfiniteEmptyExportBounds = Rect.fromLTWH(0, 0, 1000, 700);
+
+/// Whether an infinite page has visible content that can be fitted/exported.
+///
+/// An empty `page_body` (blank Markdown) does not count as content, so a new
+/// infinite document still opens at the origin instead of zooming into a large
+/// empty text box.
+bool hasInfiniteContent(Map<String, dynamic> page) {
+  final body = page['body'];
+  if (body is Map &&
+      ((body['markdown'] as String?)?.trim().isNotEmpty ?? false)) {
+    return true;
+  }
+  for (final value in page['layers'] as List? ?? const []) {
+    final layer = value as Map;
+    if (layer['visible'] == false) continue;
+    if ((layer['elements'] as List? ?? const []).isNotEmpty) return true;
+  }
+  return false;
+}
+
+/// Content bounds for an infinite canvas export.
+///
+/// Visible layers and a non-empty `page_body` are included. The returned rect
+/// is inflated by [padding]; an empty canvas falls back to
+/// [kInfiniteEmptyExportBounds], which is documented in the report. Content is
+/// intentionally not intersected with [kInfiniteCanvasBounds] so legacy
+/// out-of-bounds data is not silently cropped.
+Rect infiniteContentBounds(Map<String, dynamic> page, {double padding = 32}) {
+  Rect? result;
+
+  void include(Rect bounds) {
+    result = result == null ? bounds : result!.expandToInclude(bounds);
+  }
+
+  final body = page['body'];
+  if (body is Map &&
+      ((body['markdown'] as String?)?.trim().isNotEmpty ?? false)) {
+    include(elementBounds(Map<String, dynamic>.from(body)));
+  }
+  for (final value in page['layers'] as List? ?? const []) {
+    final layer = value as Map;
+    if (layer['visible'] == false) continue;
+    for (final elementValue in layer['elements'] as List? ?? const []) {
+      if (elementValue is! Map) continue;
+      final element = Map<String, dynamic>.from(elementValue);
+      var bounds = elementBounds(element);
+      if (element['type'] == 'image') {
+        final rotation = ((element['rotation'] as num?)?.toDouble() ?? 0) % 360;
+        // Rotated image content can extend outside its stored frame. Use the
+        // conservative diagonal box so export never crops a rotated image.
+        if (rotation.abs() > 0.01 && (rotation - 180).abs() > 0.01) {
+          final halfDiagonal =
+              math.sqrt(
+                bounds.width * bounds.width + bounds.height * bounds.height,
+              ) /
+              2;
+          bounds = Rect.fromCenter(
+            center: bounds.center,
+            width: halfDiagonal * 2,
+            height: halfDiagonal * 2,
+          );
+        }
+      }
+      include(bounds);
+    }
+  }
+
+  if (result == null) return kInfiniteEmptyExportBounds;
+  return result!.inflate(padding);
+}
+
 List<Offset> normalizePressureCurve(Iterable<Offset> input) {
   final points =
       input

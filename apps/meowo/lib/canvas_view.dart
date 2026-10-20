@@ -66,10 +66,14 @@ class CanvasView extends StatefulWidget {
   final int viewResetToken;
 
   @override
-  State<CanvasView> createState() => _CanvasViewState();
+  State<CanvasView> createState() => CanvasViewState();
 }
 
-class _CanvasViewState extends State<CanvasView> {
+const double kInfiniteMinZoom = 0.1;
+const double kInfiniteMaxZoom = 8.0;
+const Offset kInfiniteOriginScreen = Offset(64, 64);
+
+class CanvasViewState extends State<CanvasView> {
   final List<Offset> _points = [];
   final List<Offset> _lasso = [];
   final List<double> _pressures = [];
@@ -108,6 +112,8 @@ class _CanvasViewState extends State<CanvasView> {
 
   bool get _atFitZoom => !_needsFit && (_zoom - 1.0).abs() < 0.02;
 
+  bool get _isInfinite => widget.document['kind'] == 'infinite';
+
   Rect get _pagePixelRect => Rect.fromLTWH(
     _offset.dx,
     _offset.dy,
@@ -115,12 +121,70 @@ class _CanvasViewState extends State<CanvasView> {
     _pageSize.height * _lastScale,
   );
 
-  bool _isOnPage(Offset local) => _pagePixelRect.contains(local);
+  /// Absolute world-to-screen scale currently in use.
+  double get scale => _lastScale;
+
+  /// Screen position of the document origin.
+  Offset get viewOffset => _offset;
+
+  /// World-space rectangle currently visible in the viewport.
+  Rect get visibleWorldRect {
+    if (_viewportSize.isEmpty || _lastScale <= 0) return Rect.zero;
+    return Rect.fromLTWH(
+      -_offset.dx / _lastScale,
+      -_offset.dy / _lastScale,
+      _viewportSize.width / _lastScale,
+      _viewportSize.height / _lastScale,
+    );
+  }
+
+  Offset get visibleWorldCenter => visibleWorldRect.center;
+
+  /// Pixel rectangle of the paper page for paged/book documents; null for
+  /// infinite documents, which have no finite page frame.
+  Rect? get pagePixelRect => _isInfinite ? null : _pagePixelRect;
+
+  Offset worldToScreen(Offset point) => _offset + point * _lastScale;
+
+  Offset screenToWorld(Offset point) => (point - _offset) / _lastScale;
+
+  /// Resets an infinite canvas to 100% zoom with the origin near the top-left.
+  void resetToOrigin() {
+    if (!_isInfinite || _viewportSize.isEmpty) return;
+    setState(() {
+      _zoom = 1.0;
+      _lastScale = 1.0;
+      _offset = _clampInfiniteOffset(kInfiniteOriginScreen, 1.0);
+      _needsFit = false;
+      _fittedPageId = widget.page['id'] as String?;
+    });
+  }
+
+  /// Fits the visible infinite-canvas content with a screen margin.
+  ///
+  /// Returns false (and falls back to the origin) when there is no content.
+  bool fitContent() {
+    if (!_isInfinite || _viewportSize.isEmpty) return false;
+    if (!hasInfiniteContent(widget.page)) {
+      resetToOrigin();
+      return false;
+    }
+    setState(() {
+      _fitInfiniteContent(_viewportSize);
+      _needsFit = false;
+      _fittedPageId = widget.page['id'] as String?;
+    });
+    return true;
+  }
+
+  bool _isOnPage(Offset local) => _isInfinite || _pagePixelRect.contains(local);
 
   @override
   void didUpdateWidget(covariant CanvasView oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (oldWidget.page['id'] != widget.page['id'] ||
+    final documentChanged = oldWidget.document['id'] != widget.document['id'];
+    if (documentChanged ||
+        oldWidget.page['id'] != widget.page['id'] ||
         oldWidget.viewResetToken != widget.viewResetToken) {
       _zoom = 1.0;
       _offset = Offset.zero;
@@ -148,6 +212,50 @@ class _CanvasViewState extends State<CanvasView> {
       builder: (context, constraints) {
         const margin = 36.0;
         final viewport = Size(constraints.maxWidth, constraints.maxHeight);
+        _viewportSize = viewport;
+        _pageSize = Size(width, height);
+        final pageId = page['id'] as String?;
+
+        if (_isInfinite) {
+          _fitScale = 1.0;
+          if (_needsFit || _fittedPageId != pageId) {
+            _initializeInfiniteView(viewport);
+            _needsFit = false;
+            _fittedPageId = pageId;
+          }
+          _lastScale = _zoom.clamp(kInfiniteMinZoom, kInfiniteMaxZoom);
+          _zoom = _lastScale;
+          _offset = _clampInfiniteOffset(_offset, _lastScale);
+          return SizedBox(
+            width: viewport.width,
+            height: viewport.height,
+            child: ClipRect(
+              child: MouseRegion(
+                cursor: widget.tool == 'hand'
+                    ? SystemMouseCursors.grab
+                    : SystemMouseCursors.precise,
+                child: Listener(
+                  behavior: HitTestBehavior.opaque,
+                  onPointerSignal: _onPointerSignal,
+                  onPointerDown: _onDown,
+                  onPointerMove: _onMove,
+                  onPointerUp: _onUp,
+                  onPointerCancel: (event) => _cancel(event.pointer),
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTapUp: widget.tool == 'select' ? _onTapUp : null,
+                    child: CustomPaint(
+                      key: const ValueKey('meowo-canvas'),
+                      size: viewport,
+                      painter: _painter(_lastScale),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          );
+        }
+
         final fitScale = math
             .min(
               (viewport.width - margin * 2) / width,
@@ -155,7 +263,6 @@ class _CanvasViewState extends State<CanvasView> {
             )
             .clamp(0.05, 4.0);
         _fitScale = fitScale;
-        final pageId = page['id'] as String?;
         if (_needsFit || _fittedPageId != pageId) {
           _zoom = 1.0;
           final fitted = Size(width * fitScale, height * fitScale);
@@ -168,8 +275,6 @@ class _CanvasViewState extends State<CanvasView> {
         }
         final scale = fitScale * _zoom;
         _lastScale = scale;
-        _viewportSize = viewport;
-        _pageSize = Size(width, height);
         final canvasSize = Size(width * scale, height * scale);
         return SizedBox(
           width: viewport.width,
@@ -210,22 +315,7 @@ class _CanvasViewState extends State<CanvasView> {
                           child: CustomPaint(
                             key: const ValueKey('meowo-canvas'),
                             size: canvasSize,
-                            painter: MeowoCanvasPainter(
-                              document: widget.document,
-                              page: widget.page,
-                              scale: scale,
-                              images: widget.images,
-                              inProgress: _points,
-                              inProgressPressures: _pressures,
-                              inProgressColor: widget.color,
-                              inProgressWidth: widget.width,
-                              inProgressHighlighter:
-                                  widget.tool == 'highlighter',
-                              selectedIds: widget.selectionIds,
-                              selectionBounds: widget.selectionBounds,
-                              lassoPoints: _lasso,
-                              lassoRect: widget.lassoRect,
-                            ),
+                            painter: _painter(scale),
                           ),
                         ),
                       ),
@@ -240,7 +330,89 @@ class _CanvasViewState extends State<CanvasView> {
     );
   }
 
+  MeowoCanvasPainter _painter(double scale) {
+    return MeowoCanvasPainter(
+      document: widget.document,
+      page: widget.page,
+      scale: scale,
+      viewOffset: _offset,
+      images: widget.images,
+      inProgress: _points,
+      inProgressPressures: _pressures,
+      inProgressColor: widget.color,
+      inProgressWidth: widget.width,
+      inProgressHighlighter: widget.tool == 'highlighter',
+      selectedIds: widget.selectionIds,
+      selectionBounds: widget.selectionBounds,
+      lassoPoints: _lasso,
+      lassoRect: widget.lassoRect,
+    );
+  }
+
   Offset _toPage(Offset local) => (local - _offset) / _lastScale;
+
+  void _initializeInfiniteView(Size viewport) {
+    _zoom = 1.0;
+    _lastScale = 1.0;
+    if (hasInfiniteContent(widget.page)) {
+      _fitInfiniteContent(viewport);
+    } else {
+      _offset = _clampInfiniteOffset(kInfiniteOriginScreen, 1.0);
+    }
+  }
+
+  void _fitInfiniteContent(Size viewport) {
+    final content = infiniteContentBounds(widget.page, padding: 48);
+    final availableWidth = math.max(1.0, viewport.width - 96);
+    final availableHeight = math.max(1.0, viewport.height - 96);
+    final fitted = math
+        .min(
+          availableWidth / math.max(1.0, content.width),
+          availableHeight / math.max(1.0, content.height),
+        )
+        .clamp(kInfiniteMinZoom, kInfiniteMaxZoom);
+    _zoom = fitted;
+    _lastScale = fitted;
+    _offset = viewport.center(Offset.zero) - content.center * fitted;
+    _offset = _clampInfiniteOffset(_offset, fitted);
+  }
+
+  Offset _clampInfiniteOffset(Offset candidate, double scale) {
+    if (!_isInfinite || scale <= 0 || _viewportSize.isEmpty) return candidate;
+    final viewWidth = _viewportSize.width / scale;
+    final viewHeight = _viewportSize.height / scale;
+    final left = _clampInfiniteAxis(
+      -candidate.dx / scale,
+      kInfiniteCanvasBounds.left,
+      kInfiniteCanvasBounds.right,
+      viewWidth,
+    );
+    final top = _clampInfiniteAxis(
+      -candidate.dy / scale,
+      kInfiniteCanvasBounds.top,
+      kInfiniteCanvasBounds.bottom,
+      viewHeight,
+    );
+    return Offset(-left * scale, -top * scale);
+  }
+
+  double _clampInfiniteAxis(
+    double worldStart,
+    double min,
+    double max,
+    double viewSize,
+  ) {
+    if (viewSize >= max - min) return (min + max - viewSize) / 2;
+    return worldStart.clamp(min, max - viewSize);
+  }
+
+  void _panBy(Offset delta) {
+    setState(() {
+      _offset = _isInfinite
+          ? _clampInfiniteOffset(_offset + delta, _lastScale)
+          : _offset + delta;
+    });
+  }
 
   void _onPointerSignal(PointerSignalEvent event) {
     if (event is! PointerScrollEvent) return;
@@ -252,10 +424,17 @@ class _CanvasViewState extends State<CanvasView> {
     final oldScale = _fitScale * _zoom;
     if (oldScale <= 0) return;
     final pagePoint = (focus - _offset) / oldScale;
-    final newZoom = (_zoom * factor).clamp(0.25, 8.0);
+    final newZoom = _isInfinite
+        ? (_zoom * factor).clamp(kInfiniteMinZoom, kInfiniteMaxZoom)
+        : (_zoom * factor).clamp(0.25, 8.0);
     setState(() {
       _zoom = newZoom;
-      _offset = focus - pagePoint * (_fitScale * _zoom);
+      final nextScale = _fitScale * _zoom;
+      _offset = focus - pagePoint * nextScale;
+      if (_isInfinite) {
+        _lastScale = nextScale;
+        _offset = _clampInfiniteOffset(_offset, nextScale);
+      }
     });
   }
 
@@ -351,7 +530,7 @@ class _CanvasViewState extends State<CanvasView> {
     if (_middlePan) {
       final last = _middleLast;
       if (last != null) {
-        setState(() => _offset += event.localPosition - last);
+        _panBy(event.localPosition - last);
       }
       _middleLast = event.localPosition;
       return;
@@ -366,7 +545,7 @@ class _CanvasViewState extends State<CanvasView> {
     if (_panning) {
       final last = _panLast;
       if (last != null) {
-        setState(() => _offset += event.localPosition - last);
+        _panBy(event.localPosition - last);
       }
       _panLast = event.localPosition;
       return;
@@ -459,11 +638,21 @@ class _CanvasViewState extends State<CanvasView> {
     if (points.length < 2) return;
     final center = (points[0] + points[1]) / 2;
     final distance = math.max(1.0, (points[0] - points[1]).distance);
-    final nextZoom = (_baseZoom * distance / _baseDistance).clamp(0.25, 8.0);
+    final nextZoom = _isInfinite
+        ? (_baseZoom * distance / _baseDistance).clamp(
+            kInfiniteMinZoom,
+            kInfiniteMaxZoom,
+          )
+        : (_baseZoom * distance / _baseDistance).clamp(0.25, 8.0);
     final pagePoint = (_baseCenter - _baseOffset) / (_fitScale * _baseZoom);
     setState(() {
       _zoom = nextZoom;
-      _offset = center - pagePoint * (_fitScale * _zoom);
+      final nextScale = _fitScale * _zoom;
+      _offset = center - pagePoint * nextScale;
+      if (_isInfinite) {
+        _lastScale = nextScale;
+        _offset = _clampInfiniteOffset(_offset, nextScale);
+      }
     });
   }
 
@@ -677,7 +866,9 @@ class _CanvasViewState extends State<CanvasView> {
 
   void _onTapUp(TapUpDetails details) {
     if (widget.selectionIds.isNotEmpty) return;
-    final point = details.localPosition / _lastScale;
+    final point = _isInfinite
+        ? _toPage(details.localPosition)
+        : details.localPosition / _lastScale;
     final layers = (widget.page['layers'] as List? ?? const []);
     for (final layer in layers.reversed) {
       final map = layer as Map;
@@ -730,6 +921,7 @@ class MeowoCanvasPainter extends CustomPainter {
     required this.inProgressColor,
     required this.inProgressWidth,
     required this.inProgressHighlighter,
+    this.viewOffset = Offset.zero,
     this.selectedIds = const <String>{},
     this.selectionBounds,
     this.lassoPoints = const <Offset>[],
@@ -739,6 +931,10 @@ class MeowoCanvasPainter extends CustomPainter {
   final Map<String, dynamic> document;
   final Map<String, dynamic> page;
   final double scale;
+
+  /// Screen-space origin used by infinite canvases. Paged canvases ignore it
+  /// because their CustomPaint is already positioned at the paper origin.
+  final Offset viewOffset;
   final Map<String, ui.Image> images;
   final List<Offset> inProgress;
   final List<double> inProgressPressures;
@@ -752,6 +948,10 @@ class MeowoCanvasPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
+    if (document['kind'] == 'infinite') {
+      _paintInfinite(canvas, size);
+      return;
+    }
     final pageWidth = (page['width'] as num?)?.toDouble() ?? 595.276;
     final pageHeight = (page['height'] as num?)?.toDouble() ?? 841.89;
     canvas.save();
@@ -769,9 +969,40 @@ class MeowoCanvasPainter extends CustomPainter {
         filterQuality: FilterQuality.medium,
       );
     }
+    _paintBodyAndLayers(canvas);
+    _paintInProgress(canvas);
+    _paintSelection(canvas);
+    canvas.restore();
+  }
+
+  void _paintInfinite(Canvas canvas, Size size) {
+    canvas.save();
+    canvas.clipRect(Offset.zero & size);
+    _paintInfinitePaper(canvas, size);
+    canvas.save();
+    canvas.translate(viewOffset.dx, viewOffset.dy);
+    canvas.scale(scale);
+    final visibleWorld = Rect.fromLTWH(
+      -viewOffset.dx / scale,
+      -viewOffset.dy / scale,
+      size.width / scale,
+      size.height / scale,
+    ).inflate(64 / scale);
+    _paintBodyAndLayers(canvas, visibleWorld: visibleWorld);
+    _paintInProgress(canvas);
+    _paintSelection(canvas);
+    canvas.restore();
+    canvas.restore();
+  }
+
+  void _paintBodyAndLayers(Canvas canvas, {Rect? visibleWorld}) {
     final body = page['body'];
     if (body is Map) {
-      _paintTextElement(canvas, Map<String, dynamic>.from(body), isBody: true);
+      final element = Map<String, dynamic>.from(body);
+      if (visibleWorld == null ||
+          _isElementVisible(element, visibleWorld, isBody: true)) {
+        _paintTextElement(canvas, element, isBody: true);
+      }
     }
     final layers = page['layers'] as List? ?? const [];
     for (final layerValue in layers) {
@@ -781,23 +1012,41 @@ class MeowoCanvasPainter extends CustomPainter {
       if (opacity <= 0.01) continue;
       for (final value in layer['elements'] as List? ?? const []) {
         final element = Map<String, dynamic>.from(value as Map);
+        if (visibleWorld != null &&
+            !_isElementVisible(element, visibleWorld, isBody: false)) {
+          continue;
+        }
         _paintElement(canvas, element, opacity);
       }
     }
-    if (inProgress.isNotEmpty) {
-      _paintStroke(
-        canvas,
-        inProgress,
-        inProgressPressures,
-        inProgressColor,
-        inProgressWidth,
-        inProgressHighlighter,
-        1.0,
-        pressureCurveFor(document, inProgressHighlighter),
-      );
+  }
+
+  bool _isElementVisible(
+    Map<String, dynamic> element,
+    Rect visibleWorld, {
+    required bool isBody,
+  }) {
+    final bounds = elementBounds(element);
+    if (bounds.isEmpty) {
+      return visibleWorld.contains(bounds.topLeft);
     }
-    _paintSelection(canvas);
-    canvas.restore();
+    // Image rotation and text overflow can extend beyond the stored box.
+    final margin = math.max(bounds.width, bounds.height) + 24 / scale;
+    return bounds.inflate(margin).overlaps(visibleWorld);
+  }
+
+  void _paintInProgress(Canvas canvas) {
+    if (inProgress.isEmpty) return;
+    _paintStroke(
+      canvas,
+      inProgress,
+      inProgressPressures,
+      inProgressColor,
+      inProgressWidth,
+      inProgressHighlighter,
+      1.0,
+      pressureCurveFor(document, inProgressHighlighter),
+    );
   }
 
   void _paintSelection(Canvas canvas) {
@@ -879,6 +1128,60 @@ class MeowoCanvasPainter extends CustomPainter {
         }
       }
     }
+  }
+
+  void _paintInfinitePaper(Canvas canvas, Size size) {
+    canvas.drawRect(
+      Offset.zero & size,
+      Paint()..color = const Color(0xFFFFFCF5),
+    );
+    final paper = document['paper'] as Map? ?? const {};
+    final background =
+        page['background'] as String? ??
+        paper['background'] as String? ??
+        'blank';
+    if (background == 'blank') return;
+
+    final spacing = background == 'ruled' ? 28.0 : 24.0;
+    final step = spacing * scale;
+    // At very low zoom the pattern would become visual noise; fade it out.
+    if (step < 6) return;
+    final fade = ((step - 6) / 10).clamp(0.0, 1.0);
+    final linePaint = Paint()
+      ..color = const Color(0xFFB9CEDB).withValues(alpha: 0.42 * fade)
+      ..strokeWidth = 0.7;
+    final startX = _positiveModulo(viewOffset.dx, step);
+    final startY = _positiveModulo(viewOffset.dy, step);
+
+    if (background == 'ruled') {
+      for (double y = startY; y <= size.height; y += step) {
+        canvas.drawLine(Offset(0, y), Offset(size.width, y), linePaint);
+      }
+      return;
+    }
+    if (background == 'grid') {
+      for (double y = startY; y <= size.height; y += step) {
+        canvas.drawLine(Offset(0, y), Offset(size.width, y), linePaint);
+      }
+      for (double x = startX; x <= size.width; x += step) {
+        canvas.drawLine(Offset(x, 0), Offset(x, size.height), linePaint);
+      }
+      return;
+    }
+    if (background == 'dotted') {
+      final dot = Paint()
+        ..color = const Color(0xFFB9CEDB).withValues(alpha: 0.55 * fade);
+      for (double y = startY; y <= size.height; y += step) {
+        for (double x = startX; x <= size.width; x += step) {
+          canvas.drawCircle(Offset(x, y), 0.9, dot);
+        }
+      }
+    }
+  }
+
+  double _positiveModulo(double value, double modulus) {
+    final result = value % modulus;
+    return result < 0 ? result + modulus : result;
   }
 
   void _paintElement(
@@ -1115,6 +1418,60 @@ class MeowoCanvasPainter extends CustomPainter {
     // identity does not change when an element is added or moved, so repaint
     // whenever the widget rebuilds to avoid stale ink/selection overlays.
     return true;
+  }
+}
+
+/// Renders an infinite-canvas world region (normally cropped to content).
+///
+/// The output pixel dimensions are capped so a very large content region does
+/// not exhaust memory. The region is scaled down uniformly instead of being
+/// cropped, preserving all content.
+Future<Uint8List> renderInfiniteCanvasPng({
+  required Map<String, dynamic> document,
+  required Map<String, dynamic> page,
+  required Map<String, ui.Image> images,
+  required Rect region,
+  double pixelRatio = 2.0,
+  double maxDimension = 4096,
+  double maxPixels = 12000000,
+}) async {
+  if (region.width <= 0 || region.height <= 0) {
+    throw ArgumentError('无极画布导出区域必须为正数');
+  }
+  var ratio = pixelRatio;
+  ratio = math.min(ratio, maxDimension / region.width);
+  ratio = math.min(ratio, maxDimension / region.height);
+  ratio = math.min(
+    ratio,
+    math.sqrt(maxPixels / (region.width * region.height)),
+  );
+  ratio = math.max(0.000001, ratio);
+  final pixelWidth = math.max(1, (region.width * ratio).round());
+  final pixelHeight = math.max(1, (region.height * ratio).round());
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.scale(ratio);
+  MeowoCanvasPainter(
+    document: document,
+    page: page,
+    scale: 1,
+    viewOffset: -region.topLeft,
+    images: images,
+    inProgress: const <Offset>[],
+    inProgressPressures: const <double>[],
+    inProgressColor: const Color(0xFF222222),
+    inProgressWidth: 1,
+    inProgressHighlighter: false,
+  ).paint(canvas, region.size);
+  final picture = recorder.endRecording();
+  final image = await picture.toImage(pixelWidth, pixelHeight);
+  try {
+    final data = await image.toByteData(format: ui.ImageByteFormat.png);
+    if (data == null) throw StateError('画布渲染失败');
+    return data.buffer.asUint8List();
+  } finally {
+    image.dispose();
+    picture.dispose();
   }
 }
 
