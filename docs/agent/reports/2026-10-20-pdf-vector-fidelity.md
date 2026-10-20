@@ -104,6 +104,7 @@ PNG 快照仍然保留并继续作为：
 ## 7. 实现提交
 
 - `f479f35`（`feat(book): render PDF pages as on-demand vector backgrounds`）。
+- `2ac1476`（`fix(book): repaint vector backgrounds when assets arrive`）：补上 PNG/SVG 晚到时的背景重绘、翻页过渡期间矢量 Picture 的延迟释放，以及 48 MiB 批量上限。
 
 ## 8. 复现命令
 
