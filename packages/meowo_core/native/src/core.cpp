@@ -551,12 +551,12 @@ std::string searchable_text(const json& doc) {
 
 class Workspace {
  public:
-  explicit Workspace(fs::path root)
+  explicit Workspace(fs::path root, bool acquire = true)
       : root_(std::move(root)), db_(root_ / "workspace.sqlite") {
     ensure_dir(root_);
     ensure_dir(root_ / "documents");
     ensure_dir(root_ / "cache");
-    acquire_lock();
+    if (acquire) acquire_lock();
     init_workspace_db(db_);
   }
 
@@ -972,6 +972,8 @@ class Workspace {
     json doc = load_document_payload(document_path(root_, doc_id));
     json out = json::array();
     for (const auto& asset : doc.value("assets", json::array())) {
+      const std::string kind = asset.value("kind", "");
+      if (kind == "book_page" || kind == "book_source") continue;
       json item = asset;
       const auto refs = find_asset_references(doc, asset.value("id", ""));
       item["referenced"] = !refs.empty();
@@ -988,6 +990,16 @@ class Workspace {
     if (asset_id.empty()) throw CoreError("缺少资源 ID");
     const fs::path path = document_path(root_, doc_id);
     json doc = load_document_payload(path);
+    std::string kind;
+    for (const auto& asset : doc.value("assets", json::array())) {
+      if (asset.value("id", "") == asset_id) {
+        kind = asset.value("kind", "");
+        break;
+      }
+    }
+    if (kind == "book_page" || kind == "book_source") {
+      throw CoreError("书籍内部页面/源文件资源不能作为附件删除");
+    }
     const auto refs = find_asset_references(doc, asset_id);
     if (!refs.empty()) {
       throw CoreError("资源仍被引用，不能删除：" + refs.front());
@@ -1317,14 +1329,15 @@ const char* meowo_core_version(void) {
   return meowo::kCoreVersion;
 }
 
-uint64_t meowo_workspace_open(const char* root, char** error) {
+uint64_t meowo_workspace_open_ex(const char* root, int acquire_lock, char** error) {
   if (error) *error = nullptr;
   if (!root || !*root) {
     meowo::set_error(error, "资料库路径为空");
     return 0;
   }
   try {
-    auto workspace = std::make_unique<meowo::Workspace>(std::filesystem::path(root));
+    auto workspace = std::make_unique<meowo::Workspace>(
+        std::filesystem::path(root), acquire_lock != 0);
     std::lock_guard<std::mutex> lock(meowo::g_mutex);
     const uint64_t handle = meowo::g_next_handle.fetch_add(1);
     meowo::g_workspaces[handle] = std::move(workspace);
@@ -1333,6 +1346,10 @@ uint64_t meowo_workspace_open(const char* root, char** error) {
     meowo::set_error(error, std::string("打开资料库失败: ") + e.what());
     return 0;
   }
+}
+
+uint64_t meowo_workspace_open(const char* root, char** error) {
+  return meowo_workspace_open_ex(root, 1, error);
 }
 
 void meowo_workspace_close(uint64_t handle) {

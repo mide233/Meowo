@@ -85,6 +85,20 @@ class _EditorPageState extends State<EditorPage> {
     return layers.first;
   }
 
+  Map<String, dynamic>? _editableLayer() {
+    final layer = _activeLayer;
+    if (layer == null) return null;
+    if (layer['visible'] == false) {
+      _message('当前图层已隐藏');
+      return null;
+    }
+    if (layer['locked'] == true) {
+      _message('当前图层已锁定');
+      return null;
+    }
+    return layer;
+  }
+
   Map<String, dynamic>? _findElement(String id) {
     for (final layer in _layers) {
       for (final value in layer['elements'] as List? ?? const []) {
@@ -319,12 +333,8 @@ class _EditorPageState extends State<EditorPage> {
     List<double> pressures,
     bool highlighter,
   ) {
-    final layer = _activeLayer;
+    final layer = _editableLayer();
     if (layer == null) return;
-    if (layer['locked'] == true) {
-      _message('当前图层已锁定');
-      return;
-    }
     _mutate(() {
       (layer['elements'] as List).add({
         'id': 'stroke_${DateTime.now().microsecondsSinceEpoch}',
@@ -367,14 +377,20 @@ class _EditorPageState extends State<EditorPage> {
 
   void _eraseAt(Offset point) {
     if (!_eraseGestureActive) _eraseBegin();
+    final active = _activeLayer;
     final candidates = _eraseAllLayers
         ? _layers.where(
             (layer) => layer['visible'] != false && layer['locked'] != true,
           )
-        : [?_activeLayer];
+        : [
+            if (active != null &&
+                active['visible'] != false &&
+                active['locked'] != true)
+              active,
+          ];
     var changed = false;
     for (final layer in candidates) {
-      if (layer['locked'] == true) continue;
+      if (layer['visible'] == false || layer['locked'] == true) continue;
       final elements = layer['elements'] as List? ?? const [];
       for (var i = elements.length - 1; i >= 0; i--) {
         final value = elements[i];
@@ -479,7 +495,7 @@ class _EditorPageState extends State<EditorPage> {
   Future<void> _addTextBox() async {
     final text = await _markdownDialog('', '插入文本框');
     if (text == null || text.trim().isEmpty) return;
-    final layer = _activeLayer;
+    final layer = _editableLayer();
     if (layer == null) return;
     final pageWidth = (_page['width'] as num?)?.toDouble() ?? 595;
     _mutate(() {
@@ -547,7 +563,7 @@ class _EditorPageState extends State<EditorPage> {
     final asset = await state.addAsset(_doc!['id'] as String, file.path, mime);
     final image = await _decodeImage(bytes);
     _images[asset['id'] as String] = image;
-    final layer = _activeLayer;
+    final layer = _editableLayer();
     if (layer == null) return;
     final pageWidth = (_page['width'] as num?)?.toDouble() ?? 595;
     final targetWidth = (pageWidth * 0.55).clamp(120.0, 420.0);
@@ -583,7 +599,7 @@ class _EditorPageState extends State<EditorPage> {
       file.path,
       _mimeFor(file.path),
     );
-    final layer = _activeLayer;
+    final layer = _editableLayer();
     if (layer == null) return;
     _mutate(() {
       (layer['elements'] as List).add({
@@ -1349,18 +1365,22 @@ class _EditorPageState extends State<EditorPage> {
               ),
               status,
               const SizedBox(width: 8),
-              if (!compact) ...[
-                IconButton(
-                  tooltip: '撤销',
-                  onPressed: _undo.isEmpty ? null : _undoLast,
-                  icon: const Icon(Icons.undo),
-                ),
-                IconButton(
-                  tooltip: '重做',
-                  onPressed: _redo.isEmpty ? null : _redoLast,
-                  icon: const Icon(Icons.redo),
-                ),
-              ],
+              IconButton(
+                tooltip: '撤销',
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                padding: EdgeInsets.zero,
+                onPressed: _undo.isEmpty ? null : _undoLast,
+                icon: const Icon(Icons.undo),
+              ),
+              IconButton(
+                tooltip: '重做',
+                visualDensity: VisualDensity.compact,
+                constraints: const BoxConstraints(minWidth: 36, minHeight: 36),
+                padding: EdgeInsets.zero,
+                onPressed: _redo.isEmpty ? null : _redoLast,
+                icon: const Icon(Icons.redo),
+              ),
               if (_tool == 'eraser')
                 PopupMenuButton<String>(
                   tooltip: '橡皮设置',

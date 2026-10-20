@@ -32,7 +32,7 @@ MuPdfResult render_with_mupdf(const std::string& sourcePath,
   MuPdfResult result;
   result.version = FZ_VERSION;
 
-  fz_context* ctx = fz_new_context(nullptr, nullptr, FZ_STORE_UNLIMITED);
+  fz_context* ctx = fz_new_context(nullptr, nullptr, FZ_STORE_DEFAULT);
   if (!ctx) {
     result.error = "无法创建 MuPDF 上下文";
     return result;

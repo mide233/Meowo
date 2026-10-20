@@ -17,6 +17,13 @@ const char* meowo_core_version(void);
  */
 uint64_t meowo_workspace_open(const char* root, char** error);
 
+/*
+ * Like meowo_workspace_open, but optionally skips the exclusive workspace
+ * lock. Intended for short-lived background import workers that run while the
+ * owning UI process already holds the lock. Callers must serialize writes.
+ */
+uint64_t meowo_workspace_open_ex(const char* root, int acquire_lock, char** error);
+
 /* Closes a workspace handle. Safe to call with 0. */
 void meowo_workspace_close(uint64_t handle);
 

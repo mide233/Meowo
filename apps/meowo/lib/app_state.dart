@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:isolate';
 
 import 'package:flutter/foundation.dart';
 
@@ -101,23 +102,28 @@ class AppState extends ChangeNotifier {
     await openDocument(document['id'] as String);
   }
 
-  Future<void> importMarkdown(String path) async {
-    final result = core.call('import_markdown', {'sourcePath': path});
+  Future<void> _importInBackground(String op, String path) async {
+    final root = libraryRoot;
+    final result = await Isolate.run(() async {
+      final worker = await MeowoCore.open(root, acquireLock: false);
+      try {
+        return worker.call(op, {'sourcePath': path});
+      } finally {
+        worker.close();
+      }
+    });
     await refresh();
     await openDocument(result['id'] as String);
   }
 
-  Future<void> importPdf(String path) async {
-    final result = core.call('import_pdf', {'sourcePath': path});
-    await refresh();
-    await openDocument(result['id'] as String);
-  }
+  Future<void> importMarkdown(String path) =>
+      _importInBackground('import_markdown', path);
 
-  Future<void> importEpub(String path) async {
-    final result = core.call('import_epub', {'sourcePath': path});
-    await refresh();
-    await openDocument(result['id'] as String);
-  }
+  Future<void> importPdf(String path) =>
+      _importInBackground('import_pdf', path);
+
+  Future<void> importEpub(String path) =>
+      _importInBackground('import_epub', path);
 
   Future<void> openDocument(String id) async {
     final document = core.call('open_document', {'id': id});

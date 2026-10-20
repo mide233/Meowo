@@ -4,8 +4,16 @@ import 'dart:io';
 
 import 'package:ffi/ffi.dart';
 
-typedef _OpenNative = Uint64 Function(Pointer<Utf8>, Pointer<Pointer<Utf8>>);
-typedef _OpenDart = int Function(Pointer<Utf8>, Pointer<Pointer<Utf8>>);
+typedef _OpenExNative = Uint64 Function(
+  Pointer<Utf8>,
+  Int32,
+  Pointer<Pointer<Utf8>>,
+);
+typedef _OpenExDart = int Function(
+  Pointer<Utf8>,
+  int,
+  Pointer<Pointer<Utf8>>,
+);
 typedef _CloseNative = Void Function(Uint64);
 typedef _CloseDart = void Function(int);
 typedef _InvokeNative = Pointer<Utf8> Function(
@@ -54,16 +62,19 @@ class MeowoCore {
     return version().toDartString();
   }
 
-  static Future<MeowoCore> open(String root) async {
+  static Future<MeowoCore> open(
+    String root, {
+    bool acquireLock = true,
+  }) async {
     final library = DynamicLibrary.open(_resolveLibrary());
-    final open = library.lookupFunction<_OpenNative, _OpenDart>(
-      'meowo_workspace_open',
+    final open = library.lookupFunction<_OpenExNative, _OpenExDart>(
+      'meowo_workspace_open_ex',
     );
     final error = calloc<Pointer<Utf8>>();
     try {
       final path = root.toNativeUtf8();
       try {
-        final handle = open(path, error);
+        final handle = open(path, acquireLock ? 1 : 0, error);
         if (handle == 0) {
           throw MeowoException(_readError(error) ?? '无法打开资料库');
         }
