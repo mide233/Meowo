@@ -7,6 +7,7 @@ import 'package:flutter/material.dart';
 
 import 'image_ops.dart';
 import 'ink_ops.dart';
+import 'page_turn.dart';
 
 class CanvasView extends StatefulWidget {
   const CanvasView({
@@ -30,7 +31,7 @@ class CanvasView extends StatefulWidget {
     required this.onSelectionMove,
     required this.onSelectionScale,
     required this.onSelectionGestureEnd,
-    this.onPageSwipe,
+    this.pageTurnController,
     this.viewResetToken = 0,
   });
 
@@ -59,10 +60,9 @@ class CanvasView extends StatefulWidget {
   final void Function(Rect bounds) onSelectionScale;
   final VoidCallback onSelectionGestureEnd;
 
-  /// Optional album-style page navigation. The callback receives -1 for the
-  /// previous page and +1 for the next page. Null disables page swipes (for
-  /// example in infinite documents).
-  final ValueChanged<int>? onPageSwipe;
+  /// Optional album-style page-turn controller. Only active for paged/book
+  /// documents at fit zoom with the hand tool; null disables page turning.
+  final PageTurnController? pageTurnController;
   final int viewResetToken;
 
   @override
@@ -71,7 +71,43 @@ class CanvasView extends StatefulWidget {
 
 const double kInfiniteMinZoom = 0.1;
 const double kInfiniteMaxZoom = 8.0;
+const double kPagedMinZoom = 1.0;
+const double kPagedMaxZoom = 8.0;
+const double kPagedPageMargin = 36.0;
 const Offset kInfiniteOriginScreen = Offset(64, 64);
+
+Size pagedPageSize(Map<String, dynamic> document, Map<String, dynamic> page) {
+  final paper = document['paper'] as Map?;
+  final width =
+      (page['width'] as num?)?.toDouble() ??
+      (paper?['width'] as num?)?.toDouble() ??
+      595.276;
+  final height =
+      (page['height'] as num?)?.toDouble() ??
+      (paper?['height'] as num?)?.toDouble() ??
+      841.89;
+  return Size(width, height);
+}
+
+double pagedFitScale(Size viewport, Size pageSize) {
+  return math
+      .min(
+        (viewport.width - kPagedPageMargin * 2) / pageSize.width,
+        (viewport.height - kPagedPageMargin * 2) / pageSize.height,
+      )
+      .clamp(0.05, 4.0);
+}
+
+Rect pagedPageRect(Size viewport, Size pageSize) {
+  final scale = pagedFitScale(viewport, pageSize);
+  final fitted = Size(pageSize.width * scale, pageSize.height * scale);
+  return Rect.fromLTWH(
+    (viewport.width - fitted.width) / 2,
+    (viewport.height - fitted.height) / 2,
+    fitted.width,
+    fitted.height,
+  );
+}
 
 class CanvasViewState extends State<CanvasView> {
   final List<Offset> _points = [];
@@ -104,11 +140,7 @@ class CanvasViewState extends State<CanvasView> {
 
   Size _viewportSize = Size.zero;
   Size _pageSize = Size.zero;
-  Offset? _swipeStart;
-  Duration _swipeStartTime = Duration.zero;
-  int? _swipePointer;
-  bool _swipeFromEdge = false;
-  bool _swipeCandidate = false;
+  bool _pageTurnPending = false;
 
   bool get _atFitZoom => !_needsFit && (_zoom - 1.0).abs() < 0.02;
 
@@ -177,8 +209,6 @@ class CanvasViewState extends State<CanvasView> {
     return true;
   }
 
-  bool _isOnPage(Offset local) => _isInfinite || _pagePixelRect.contains(local);
-
   @override
   void didUpdateWidget(covariant CanvasView oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -193,30 +223,25 @@ class CanvasViewState extends State<CanvasView> {
       _panning = false;
       _viewGesture = false;
       _touches.clear();
-      _clearSwipe();
+      _pageTurnPending = false;
     }
   }
 
   @override
   Widget build(BuildContext context) {
     final page = widget.page;
-    final width =
-        (page['width'] as num?)?.toDouble() ??
-        ((widget.document['paper'] as Map?)?['width'] as num?)?.toDouble() ??
-        595.276;
-    final height =
-        (page['height'] as num?)?.toDouble() ??
-        ((widget.document['paper'] as Map?)?['height'] as num?)?.toDouble() ??
-        841.89;
+    final pageSize = pagedPageSize(widget.document, page);
+    final width = pageSize.width;
+    final height = pageSize.height;
     return LayoutBuilder(
       builder: (context, constraints) {
-        const margin = 36.0;
         final viewport = Size(constraints.maxWidth, constraints.maxHeight);
         _viewportSize = viewport;
-        _pageSize = Size(width, height);
+        _pageSize = pageSize;
         final pageId = page['id'] as String?;
 
         if (_isInfinite) {
+          widget.pageTurnController?.canStart = false;
           _fitScale = 1.0;
           if (_needsFit || _fittedPageId != pageId) {
             _initializeInfiniteView(viewport);
@@ -256,12 +281,7 @@ class CanvasViewState extends State<CanvasView> {
           );
         }
 
-        final fitScale = math
-            .min(
-              (viewport.width - margin * 2) / width,
-              (viewport.height - margin * 2) / height,
-            )
-            .clamp(0.05, 4.0);
+        final fitScale = pagedFitScale(viewport, pageSize);
         _fitScale = fitScale;
         if (_needsFit || _fittedPageId != pageId) {
           _zoom = 1.0;
@@ -273,6 +293,8 @@ class CanvasViewState extends State<CanvasView> {
           _needsFit = false;
           _fittedPageId = pageId;
         }
+        widget.pageTurnController?.canStart =
+            widget.tool == 'hand' && _atFitZoom;
         final scale = fitScale * _zoom;
         _lastScale = scale;
         final canvasSize = Size(width * scale, height * scale);
@@ -426,7 +448,7 @@ class CanvasViewState extends State<CanvasView> {
     final pagePoint = (focus - _offset) / oldScale;
     final newZoom = _isInfinite
         ? (_zoom * factor).clamp(kInfiniteMinZoom, kInfiniteMaxZoom)
-        : (_zoom * factor).clamp(0.25, 8.0);
+        : (_zoom * factor).clamp(kPagedMinZoom, kPagedMaxZoom);
     setState(() {
       _zoom = newZoom;
       final nextScale = _fitScale * _zoom;
@@ -445,14 +467,6 @@ class CanvasViewState extends State<CanvasView> {
         _startViewGesture();
         return;
       }
-      if (widget.onPageSwipe != null && _atFitZoom) {
-        final fromEdge = !_isOnPage(event.localPosition);
-        if (fromEdge || widget.tool == 'hand') {
-          _beginSwipe(event, fromEdge: fromEdge);
-          // A swipe that starts in the gray gutter must never draw or pan.
-          if (fromEdge) return;
-        }
-      }
     }
     if (event.kind == PointerDeviceKind.mouse &&
         (event.buttons & kMiddleMouseButton) != 0) {
@@ -462,6 +476,19 @@ class CanvasViewState extends State<CanvasView> {
       return;
     }
     if (widget.tool == 'hand') {
+      final turn = widget.pageTurnController;
+      if (turn != null) {
+        if (turn.busy) return;
+        if (_isPageTurnPointer(event) &&
+            turn.begin(
+              event.localPosition,
+              event.timeStamp,
+              pointer: event.pointer,
+            )) {
+          _pageTurnPending = true;
+          return;
+        }
+      }
       setState(() => _panning = true);
       _panLast = event.localPosition;
       return;
@@ -489,41 +516,13 @@ class CanvasViewState extends State<CanvasView> {
     });
   }
 
-  void _beginSwipe(PointerDownEvent event, {required bool fromEdge}) {
-    _swipeCandidate = true;
-    _swipeFromEdge = fromEdge;
-    _swipeStart = event.localPosition;
-    _swipeStartTime = event.timeStamp;
-    _swipePointer = event.pointer;
-  }
-
-  void _clearSwipe() {
-    _swipeCandidate = false;
-    _swipeFromEdge = false;
-    _swipeStart = null;
-    _swipePointer = null;
-  }
-
-  int _swipeDirection(PointerUpEvent event) {
-    if (!_swipeCandidate || _swipePointer != event.pointer) return 0;
-    final start = _swipeStart;
-    if (start == null) return 0;
-    final delta = event.localPosition - start;
-    final elapsed = event.timeStamp - _swipeStartTime;
-    final milliseconds = math.max(1, elapsed.inMilliseconds);
-    final speed = delta.dx.abs() / milliseconds;
-    final minDistance = _swipeFromEdge
-        ? math.max(56.0, _viewportSize.width * 0.10)
-        : math.max(120.0, _viewportSize.width * 0.18);
-    final horizontal = delta.dx.abs() >= delta.dy.abs() * 1.6;
-    final fastEnough = elapsed.inMilliseconds <= 650 && speed >= 0.4;
-    if (!horizontal ||
-        delta.dx.abs() < minDistance ||
-        !fastEnough ||
-        !_atFitZoom) {
-      return 0;
+  bool _isPageTurnPointer(PointerDownEvent event) {
+    if (event.kind == PointerDeviceKind.touch ||
+        event.kind == PointerDeviceKind.stylus ||
+        event.kind == PointerDeviceKind.invertedStylus) {
+      return true;
     }
-    return delta.dx < 0 ? 1 : -1;
+    return (event.buttons & kPrimaryButton) != 0;
   }
 
   void _onMove(PointerMoveEvent event) {
@@ -539,6 +538,26 @@ class CanvasViewState extends State<CanvasView> {
       if (_touches.containsKey(event.pointer)) {
         _touches[event.pointer] = event.localPosition;
         _updateViewGesture();
+      }
+      return;
+    }
+    if (_pageTurnPending) {
+      final turn = widget.pageTurnController;
+      if (turn == null) {
+        _pageTurnPending = false;
+        return;
+      }
+      final drag = turn.update(
+        event.localPosition,
+        event.timeStamp,
+        pointer: event.pointer,
+      );
+      if (drag == PageTurnDrag.vertical) {
+        // The gesture was vertical after all; fall back to hand-tool panning
+        // from the current position so the page does not jump.
+        _pageTurnPending = false;
+        setState(() => _panning = true);
+        _panLast = event.localPosition;
       }
       return;
     }
@@ -583,15 +602,14 @@ class CanvasViewState extends State<CanvasView> {
       }
       return;
     }
-    if (_swipeCandidate) {
-      final direction = _swipeDirection(event);
-      _clearSwipe();
-      if (direction != 0) {
-        if (_panning) setState(() => _panning = false);
-        _panLast = null;
-        widget.onPageSwipe?.call(direction);
-        return;
-      }
+    if (_pageTurnPending) {
+      _pageTurnPending = false;
+      widget.pageTurnController?.end(
+        event.localPosition,
+        event.timeStamp,
+        pointer: event.pointer,
+      );
+      return;
     }
     if (_panning) {
       setState(() => _panning = false);
@@ -643,7 +661,10 @@ class CanvasViewState extends State<CanvasView> {
             kInfiniteMinZoom,
             kInfiniteMaxZoom,
           )
-        : (_baseZoom * distance / _baseDistance).clamp(0.25, 8.0);
+        : (_baseZoom * distance / _baseDistance).clamp(
+            kPagedMinZoom,
+            kPagedMaxZoom,
+          );
     final pagePoint = (_baseCenter - _baseOffset) / (_fitScale * _baseZoom);
     setState(() {
       _zoom = nextZoom;
@@ -657,7 +678,10 @@ class CanvasViewState extends State<CanvasView> {
   }
 
   void _cancelActiveGesture() {
-    _clearSwipe();
+    if (_pageTurnPending) {
+      _pageTurnPending = false;
+      widget.pageTurnController?.cancel();
+    }
     if (_drawing) {
       setState(() {
         _drawing = false;
@@ -831,7 +855,12 @@ class CanvasViewState extends State<CanvasView> {
 
   void _cancel(int pointer) {
     _touches.remove(pointer);
-    if (_swipePointer == pointer) _clearSwipe();
+    if (_pageTurnPending) {
+      final turn = widget.pageTurnController;
+      _pageTurnPending = false;
+      if (turn != null) turn.cancel();
+      return;
+    }
     if (_viewGesture) {
       if (_touches.length < 2) {
         _viewGesture = false;

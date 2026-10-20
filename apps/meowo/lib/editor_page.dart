@@ -17,6 +17,7 @@ import 'attachment_panel.dart';
 import 'canvas_view.dart';
 import 'image_edit_dialog.dart';
 import 'ink_ops.dart';
+import 'page_turn.dart';
 import 'pressure_curve_dialog.dart';
 
 enum _SaveState { saved, saving, failed }
@@ -55,6 +56,7 @@ class _EditorPageState extends State<EditorPage> {
   double _width = 2.5;
   int _pageIndex = 0;
   int _pageSlideDirection = 1;
+  bool _suppressPageSlide = false;
   final _retainedImageIds = <String>{};
   String? _activeLayerId;
   String? _loadedDocId;
@@ -177,6 +179,7 @@ class _EditorPageState extends State<EditorPage> {
       _loadedDocId = id;
       _pageIndex = 0;
       _pageSlideDirection = 1;
+      _suppressPageSlide = false;
       _retainedImageIds.clear();
       _undo.clear();
       _redo.clear();
@@ -204,15 +207,26 @@ class _EditorPageState extends State<EditorPage> {
     final doc = _doc;
     if (doc == null) return;
     final ids = <String>{};
-    final page = _page;
-    final source = page['sourceAssetId'] as String?;
-    if (source != null) ids.add(source);
-    for (final layer in _layers) {
-      for (final value in layer['elements'] as List? ?? const []) {
-        final element = value as Map;
-        if (element['type'] == 'image') {
-          final id = element['assetId'] as String?;
-          if (id != null) ids.add(id);
+    final pages = (doc['pages'] as List).map((e) => e as Map).toList();
+    final indexes = <int>{
+      _pageIndex,
+      if (doc['kind'] != 'infinite' && _pageIndex > 0) _pageIndex - 1,
+      if (doc['kind'] != 'infinite' && _pageIndex + 1 < pages.length)
+        _pageIndex + 1,
+    };
+    for (final index in indexes) {
+      if (index < 0 || index >= pages.length) continue;
+      final page = pages[index];
+      final source = page['sourceAssetId'] as String?;
+      if (source != null) ids.add(source);
+      for (final layerValue in page['layers'] as List? ?? const []) {
+        final layer = layerValue as Map;
+        for (final value in layer['elements'] as List? ?? const []) {
+          final element = value as Map;
+          if (element['type'] == 'image') {
+            final id = element['assetId'] as String?;
+            if (id != null) ids.add(id);
+          }
         }
       }
     }
@@ -372,11 +386,18 @@ class _EditorPageState extends State<EditorPage> {
     await _loadPageImages();
   }
 
-  void _swipePage(int direction) {
+  Future<void> _turnPage(int direction) async {
     if (_doc == null || _doc!['kind'] == 'infinite') return;
     final target = _pageIndex + direction;
     if (target < 0 || target >= (_doc!['pages'] as List).length) return;
-    unawaited(_setPage(target));
+    // The page-turn layer already shows the incoming page at the resting
+    // position; do not replay the picker/button slide transition underneath.
+    _suppressPageSlide = true;
+    try {
+      await _setPage(target);
+    } finally {
+      if (mounted) setState(() => _suppressPageSlide = false);
+    }
   }
 
   void _addStroke(
@@ -1325,7 +1346,7 @@ class _EditorPageState extends State<EditorPage> {
     final wide = media.width >= 1040;
     final compact = media.width < 760;
     final isInfinite = _doc!['kind'] == 'infinite';
-    final canvas = CanvasView(
+    CanvasView buildCanvas(PageTurnController? pageTurn) => CanvasView(
       // Infinite documents do not need a page-slide transition. Keeping the
       // canvas outside the transition also prevents the outgoing page and the
       // incoming page from holding the same GlobalKey during the 240 ms
@@ -1342,7 +1363,7 @@ class _EditorPageState extends State<EditorPage> {
       selectionBounds: _selectionBounds,
       lassoRect: _lassoRect,
       viewResetToken: _viewResetToken,
-      onPageSwipe: isInfinite ? null : _swipePage,
+      pageTurnController: pageTurn,
       onStroke: _addStroke,
       onErase: _eraseAt,
       onEraseStart: _eraseBegin,
@@ -1357,6 +1378,16 @@ class _EditorPageState extends State<EditorPage> {
       onSelectionScale: _applySelectionScale,
       onSelectionGestureEnd: _endSelectionTransform,
     );
+    final canvas = isInfinite
+        ? buildCanvas(null)
+        : PageTurnLayer(
+            document: _doc!,
+            pages: _pages,
+            pageIndex: _pageIndex,
+            images: _images,
+            onPageRequested: _turnPage,
+            builder: (context, pageTurn) => buildCanvas(pageTurn),
+          );
     return Column(
       children: [
         _topBar(context, wide, compact),
@@ -1374,6 +1405,7 @@ class _EditorPageState extends State<EditorPage> {
                         : _PageSlideTransition(
                             pageKey: _page['id'] as String? ?? _pageIndex,
                             direction: _pageSlideDirection,
+                            animate: !_suppressPageSlide,
                             child: canvas,
                           ),
                   ),
@@ -2036,11 +2068,13 @@ class _PageSlideTransition extends StatefulWidget {
     required this.pageKey,
     required this.direction,
     required this.child,
+    this.animate = true,
   });
 
   final Object pageKey;
   final int direction;
   final Widget child;
+  final bool animate;
 
   @override
   State<_PageSlideTransition> createState() => _PageSlideTransitionState();
@@ -2072,6 +2106,11 @@ class _PageSlideTransitionState extends State<_PageSlideTransition>
   void didUpdateWidget(covariant _PageSlideTransition oldWidget) {
     super.didUpdateWidget(oldWidget);
     if (oldWidget.pageKey != widget.pageKey) {
+      if (!widget.animate) {
+        _previousChild = null;
+        _controller.value = 1;
+        return;
+      }
       _previousChild = oldWidget.child;
       _direction = widget.direction == 0 ? 1 : widget.direction;
       _controller.forward(from: 0);
