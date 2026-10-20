@@ -1138,7 +1138,14 @@ void paintBookPageBackground(
   Map<String, ui.Image> images,
   Map<String, BookVectorPage> vectors,
 ) {
-  paintPagePaper(canvas, document, page, pageRect);
+  // Imported PDF/EPUB pages carry their own page background (usually white).
+  // Do not tint them with the notebook paper texture; only inserted note pages
+  // and ordinary paged documents use the app paper.
+  if (document['bookSource'] is Map && page['isNotePage'] != true) {
+    canvas.drawRect(pageRect, Paint()..color = const Color(0xFFFFFFFF));
+  } else {
+    paintPagePaper(canvas, document, page, pageRect);
+  }
   final vector = vectors[page['id']];
   if (vector != null) {
     paintBookVector(canvas, pageRect, vector);
@@ -1302,8 +1309,10 @@ class MeowoCanvasPainter extends CustomPainter {
       size.height / scale,
     ).inflate(64 / scale);
     _paintBodyAndLayers(canvas, visibleWorld: visibleWorld);
-    _paintInProgress(canvas);
-    _paintSelection(canvas);
+    if (!overlayOnly) {
+      _paintInProgress(canvas);
+      _paintSelection(canvas);
+    }
     canvas.restore();
     canvas.restore();
   }
@@ -1769,12 +1778,15 @@ Future<Uint8List> renderBookOverlayPng({
   required Map<String, dynamic> document,
   required Map<String, dynamic> page,
   required Map<String, ui.Image> images,
+  Rect? region,
+  bool paintBackground = false,
   double dpi = 300.0,
   double maxSide = 8192,
   double maxPixels = 32000000,
 }) async {
-  final width = (page['width'] as num?)?.toDouble() ?? 595.276;
-  final height = (page['height'] as num?)?.toDouble() ?? 841.89;
+  final width = region?.width ?? (page['width'] as num?)?.toDouble() ?? 595.276;
+  final height =
+      region?.height ?? (page['height'] as num?)?.toDouble() ?? 841.89;
   var ratio = dpi / 72.0;
   ratio = math.min(ratio, maxSide / width);
   ratio = math.min(ratio, maxSide / height);
@@ -1790,8 +1802,9 @@ Future<Uint8List> renderBookOverlayPng({
     page: page,
     scale: 1,
     images: images,
-    paintBackground: false,
+    paintBackground: paintBackground,
     overlayOnly: true,
+    viewOffset: region == null ? Offset.zero : -region.topLeft,
     inProgress: const <Offset>[],
     inProgressPressures: const <double>[],
     inProgressColor: const Color(0xFF222222),

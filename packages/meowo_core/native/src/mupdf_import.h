@@ -33,6 +33,21 @@ struct MuPdfVectorPage {
   std::string svg;
 };
 
+struct MuPdfProbe {
+  bool ok = false;
+  std::string error;
+  int pageCount = 0;
+  bool encrypted = false;
+  std::string title;
+  std::string author;
+  std::string format;
+};
+
+// Opens a PDF/EPUB and counts pages without rendering; used for the >500-page
+// import warning before the full import job starts.
+MuPdfProbe probe_with_mupdf(const std::string& sourcePath,
+                            const std::string& password);
+
 // Renders selected pages of an in-memory PDF to standalone SVG documents.
 // Glyph <use> references are inlined because Flutter's SVG compiler rejects
 // more than 1000 reference expansions per document.
@@ -45,7 +60,7 @@ std::vector<MuPdfVectorPage> render_pdf_pages_svg(
 // keeps C++ objects outside fz_try to keep the boundary safe.
 MuPdfResult render_with_mupdf(const std::string& sourcePath,
                               const std::string& outputDir,
-                              const std::string& password,
-                              int maxPages);
+                              const std::string& password, int maxPages,
+                              const std::string& progressPath = "");
 
 }  // namespace meowo

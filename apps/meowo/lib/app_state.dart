@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:isolate';
@@ -25,6 +26,10 @@ class AppState extends ChangeNotifier {
   bool loading = false;
   bool importing = false;
   String? importLabel;
+  double? importProgress;
+  int importCompleted = 0;
+  int importTotal = 0;
+  String? importPhase;
   String? error;
 
   Map<String, dynamic> get info => core.call('workspace_info');
@@ -104,6 +109,34 @@ class AppState extends ChangeNotifier {
     await openDocument(document['id'] as String);
   }
 
+  Future<Map<String, dynamic>?> probeBook(String path) async {
+    try {
+      return core.call('probe_book', {'sourcePath': path});
+    } catch (_) {
+      // The import itself will surface a useful error if the file is invalid.
+      return null;
+    }
+  }
+
+  static Future<Map<String, dynamic>> _runImportIsolate(
+    String root,
+    String op,
+    String path,
+    String progressPath,
+  ) {
+    return Isolate.run(() async {
+      final worker = await MeowoCore.open(root, acquireLock: false);
+      try {
+        return worker.call(op, {
+          'sourcePath': path,
+          'progressPath': progressPath,
+        });
+      } finally {
+        worker.close();
+      }
+    });
+  }
+
   Future<void> _importInBackground(String op, String path) async {
     if (importing) return;
     importing = true;
@@ -112,23 +145,51 @@ class AppState extends ChangeNotifier {
       'import_epub' => 'EPUB',
       _ => 'Markdown',
     };
+    importProgress = 0;
+    importCompleted = 0;
+    importTotal = 0;
+    importPhase = 'reading';
     error = null;
     notifyListeners();
+
+    final progressPath =
+        '$libraryRoot/.import/progress-${DateTime.now().microsecondsSinceEpoch}.json';
     try {
-      final root = libraryRoot;
-      final result = await Isolate.run(() async {
-        final worker = await MeowoCore.open(root, acquireLock: false);
+      await Directory('$libraryRoot/.import').create(recursive: true);
+    } catch (_) {}
+    Timer? poll;
+    try {
+      poll = Timer.periodic(const Duration(milliseconds: 180), (_) async {
         try {
-          return worker.call(op, {'sourcePath': path});
-        } finally {
-          worker.close();
+          final text = await File(progressPath).readAsString();
+          final data = jsonDecode(text) as Map<String, dynamic>;
+          final total = (data['total'] as num?)?.toInt() ?? 0;
+          final completed = (data['completed'] as num?)?.toInt() ?? 0;
+          importTotal = total;
+          importCompleted = completed;
+          importPhase = data['phase'] as String? ?? 'rendering';
+          importProgress = total > 0 ? (completed / total).clamp(0.0, 1.0) : null;
+          notifyListeners();
+        } catch (_) {
+          // The writer may be between atomic updates; keep the last value.
         }
       });
+      final root = libraryRoot;
+      final result =
+          await _runImportIsolate(root, op, path, progressPath);
       await refresh();
       await openDocument(result['id'] as String);
     } finally {
+      poll?.cancel();
+      try {
+        await File(progressPath).delete();
+      } catch (_) {}
       importing = false;
       importLabel = null;
+      importProgress = null;
+      importCompleted = 0;
+      importTotal = 0;
+      importPhase = null;
       notifyListeners();
     }
   }

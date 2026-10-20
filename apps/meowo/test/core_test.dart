@@ -111,8 +111,8 @@ void main() {
       'targetPath': out,
       'pageIndexes': [1],
     });
-    expect(exported['exportedPages'], [1]);
-    expect(exported['vectorPages'], [1]);
+    expect(exported['exportedPages'], [2]);
+    expect(exported['vectorPages'], [2]);
     expect(exported['fallbackPages'], isEmpty);
     expect(File(out).existsSync(), isTrue);
     expect(File(out).readAsBytesSync().take(4), [0x25, 0x50, 0x44, 0x46]);

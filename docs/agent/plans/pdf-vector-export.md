@@ -123,3 +123,14 @@ C ABI 同步，采用文件协议：
 - Type3/无法轮廓化的字形使该页回退 PNG。
 - 取消仅按页生效；最终保存不可中断。
 - 需真机验证大 PDF 内存、300 DPI 叠加层耗时与 Android SAF 保存路径。
+
+## 7. 2026-10-20 复检修复（owner issues #6–#13）
+
+- 修复笔记页导出：`sourceIndex` / `sourceAssetId` 为 JSON `null` 时不再触发 nlohmann `type must be string`；导出报告页码改为文档实际页码（如导出 80–82 显示 80–82，而不是 1–3）。
+- 修复方向：回退 PNG 背景、笔记页笔迹、EPUB 固定页统一使用“显示坐标左上角 → PDF 左下角”的翻转；回退位图不再单独使用负高度矩阵。
+- 普通书页（`paged`）与无极画布（`infinite`）改用 Dart PDF 矢量层：纸张/文字/图片仍栅格化，笔迹与荧光笔写入 PDF 路径；无极画布按内容区域裁切并平移。
+- 导入：移除 500 页硬限制；超过 500 页在导入前提示确认；导入核心写进度 JSON，库页显示确定进度条；页面 PNG 改为逐页写入 SQLite 批量事务，避免整本 PNG 常驻内存；PNG 渲染 96 DPI。
+- 预览：缩略图渲染串行化（一次一张）、目标最长边 160 px，并在栅格化前让出一帧，降低页选择器卡顿。
+- 背景：导入 PDF/EPUB 的源页改用白色底，不再透出笔记纸纹理；插入笔记页仍使用书籍纸张背景。
+- 稳定性：`EditorPage` 按文档 ID 加 key；切页时旧 `ui.Image` 延迟 600 ms 释放，避免 native peer 已被回收后仍被 painter 访问。
+- 工具栏：框选改为 `select_all`，荧光笔改为 `border_color_outlined`，橡皮改为 `cleaning_services_outlined`。

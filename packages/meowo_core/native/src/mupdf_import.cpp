@@ -5,13 +5,16 @@
 #include <algorithm>
 #include <cstdio>
 #include <cstring>
+#include <fstream>
 #include <stdexcept>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 namespace meowo {
 namespace {
 
-constexpr float kRenderDpi = 120.0f;
+constexpr float kRenderDpi = 96.0f;
 constexpr float kPointsPerInch = 72.0f;
 constexpr float kMaxRenderPixels = 5000.0f;
 constexpr int kMetaBuffer = 512;
@@ -22,6 +25,14 @@ constexpr size_t kMaxBatchSvgBytes = 48ull * 1024ull * 1024ull;
 // expansions. Font glyph references are inlined below; anything left is
 // treated as unsupported so the caller keeps the PNG snapshot.
 constexpr int kMaxUnresolvedUseRefs = 800;
+
+void write_import_progress(const std::string& path, int completed, int total) {
+  if (path.empty()) return;
+  std::ofstream out(path, std::ios::binary | std::ios::trunc);
+  if (!out) return;
+  out << "{\"phase\":\"rendering\",\"completed\":" << completed
+      << ",\"total\":" << total << ",\"pageNumber\":" << completed << "}";
+}
 
 std::string attr_value(const std::string& tag, const std::string& name) {
   const std::string needle = " " + name + "=\"";
@@ -198,8 +209,8 @@ void lookup_metadata(fz_context* ctx, fz_document* doc, const char* key, char* o
 
 MuPdfResult render_with_mupdf(const std::string& sourcePath,
                               const std::string& outputDir,
-                              const std::string& password,
-                              int maxPages) {
+                              const std::string& password, int maxPages,
+                              const std::string& progressPath) {
   MuPdfResult result;
   result.version = FZ_VERSION;
 
@@ -249,8 +260,9 @@ MuPdfResult render_with_mupdf(const std::string& sourcePath,
     pageCount = fz_count_pages(ctx, doc);
     if (pageCount <= 0) fz_throw(ctx, FZ_ERROR_ARGUMENT, "文档没有可渲染页面");
     if (maxPages > 0 && pageCount > maxPages) {
-      fz_throw(ctx, FZ_ERROR_ARGUMENT, "首版单次最多导入 500 页");
+      fz_throw(ctx, FZ_ERROR_ARGUMENT, "文档页数超过当前导入上限");
     }
+    write_import_progress(progressPath, 0, pageCount);
 
     result.pages.reserve(static_cast<size_t>(pageCount));
     for (int i = 0; i < pageCount; ++i) {
@@ -299,6 +311,7 @@ MuPdfResult render_with_mupdf(const std::string& sourcePath,
       pix = nullptr;
       fz_drop_page(ctx, page);
       page = nullptr;
+      write_import_progress(progressPath, i + 1, pageCount);
     }
 
     result.pageCount = pageCount;
@@ -322,6 +335,52 @@ MuPdfResult render_with_mupdf(const std::string& sourcePath,
 
   if (result.error.empty()) {
     result.ok = true;
+    result.title = title;
+    result.author = author;
+    result.format = format;
+  }
+  return result;
+}
+
+MuPdfProbe probe_with_mupdf(const std::string& sourcePath,
+                            const std::string& password) {
+  MuPdfProbe result;
+  fz_context* ctx = fz_new_context(nullptr, nullptr, FZ_STORE_DEFAULT);
+  if (!ctx) {
+    result.error = "无法创建 MuPDF 上下文";
+    return result;
+  }
+  fz_document* doc = nullptr;
+  char title[kMetaBuffer]{};
+  char author[kMetaBuffer]{};
+  char format[kMetaBuffer]{};
+  fz_var(doc);
+  fz_try(ctx) {
+    fz_register_document_handlers(ctx);
+    doc = fz_open_document(ctx, sourcePath.c_str());
+    if (!doc) fz_throw(ctx, FZ_ERROR_ARGUMENT, "MuPDF 无法打开文档");
+    if (fz_needs_password(ctx, doc)) {
+      result.encrypted = true;
+      if (!password.empty()) {
+        fz_authenticate_password(ctx, doc, password.c_str());
+      }
+    }
+    if (fz_is_document_reflowable(ctx, doc)) {
+      fz_layout_document(ctx, doc, 595.276f, 841.89f, 12.0f);
+    }
+    result.pageCount = fz_count_pages(ctx, doc);
+    lookup_metadata(ctx, doc, FZ_META_INFO_TITLE, title, sizeof(title));
+    lookup_metadata(ctx, doc, FZ_META_INFO_AUTHOR, author, sizeof(author));
+    lookup_metadata(ctx, doc, FZ_META_FORMAT, format, sizeof(format));
+    result.ok = true;
+  }
+  fz_catch(ctx) {
+    result.error = fz_caught_message(ctx);
+    result.ok = false;
+  }
+  if (doc) fz_drop_document(ctx, doc);
+  fz_drop_context(ctx);
+  if (result.ok) {
     result.title = title;
     result.author = author;
     result.format = format;

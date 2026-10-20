@@ -261,8 +261,15 @@ class _EditorPageState extends State<EditorPage> {
     }
     for (final entry in old.entries) {
       if (!keep.contains(entry.key)) {
-        entry.value.dispose();
         _images.remove(entry.key);
+        // A page-slide transition can keep the outgoing painter alive for a
+        // frame or two. Defer native image disposal so it cannot outlive the
+        // Dart object that is still painting it.
+        final image = entry.value;
+        Future<void>.delayed(
+          const Duration(milliseconds: 600),
+          image.dispose,
+        );
       }
     }
     _retainedImageIds
@@ -1751,30 +1758,26 @@ class _EditorPageState extends State<EditorPage> {
         final page = pages[index] as Map<String, dynamic>;
         final images = await _imagesForPage(page);
         try {
-          final Uint8List png;
-          final Size pageSize;
-          if (doc['kind'] == 'infinite') {
-            final region = infiniteContentBounds(page);
-            png = await renderInfiniteCanvasPng(
-              document: doc,
-              page: page,
-              images: images,
-              region: region,
-              pixelRatio: 2.0,
-            );
-            pageSize = _pdfPageSize(region.size);
-          } else {
-            final width = (page['width'] as num?)?.toDouble() ?? 595.276;
-            final height = (page['height'] as num?)?.toDouble() ?? 841.89;
-            png = await renderPagePng(
-              document: doc,
-              page: page,
-              images: images,
-              pixelRatio: 2.0,
-            );
-            pageSize = Size(width, height);
-          }
-          final image = pw.MemoryImage(png);
+          final infinite = doc['kind'] == 'infinite';
+          final width =
+              (page['width'] as num?)?.toDouble() ?? 595.276;
+          final height =
+              (page['height'] as num?)?.toDouble() ?? 841.89;
+          final region = infinite
+              ? infiniteContentBounds(page)
+              : Rect.fromLTWH(0, 0, width, height);
+          final pageSize = _pdfPageSize(region.size);
+          final scale = region.width > 0
+              ? pageSize.width / region.width
+              : 1.0;
+          final overlay = await renderBookOverlayPng(
+            document: doc,
+            page: page,
+            images: images,
+            region: infinite ? region : null,
+            paintBackground: !infinite,
+          );
+          final overlayImage = pw.MemoryImage(overlay);
           pdf.addPage(
             pw.Page(
               pageFormat: PdfPageFormat(
@@ -1782,7 +1785,27 @@ class _EditorPageState extends State<EditorPage> {
                 pageSize.height,
                 marginAll: 0,
               ),
-              build: (context) => pw.Image(image, fit: pw.BoxFit.fill),
+              build: (context) => pw.Stack(
+                children: [
+                  pw.Positioned.fill(
+                    child: pw.Image(overlayImage, fit: pw.BoxFit.fill),
+                  ),
+                  pw.Positioned.fill(
+                    child: pw.CustomPaint(
+                      painter: (canvas, size) {
+                        _paintVectorStrokes(
+                          canvas,
+                          doc: doc,
+                          page: page,
+                          region: region,
+                          scale: scale,
+                          pageHeight: pageSize.height,
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
             ),
           );
         } finally {
@@ -1795,12 +1818,105 @@ class _EditorPageState extends State<EditorPage> {
       await File(location.path).writeAsBytes(bytes);
       _message(
         doc['kind'] == 'infinite'
-            ? 'PDF 已导出（无极画布按内容裁切）'
-            : 'PDF 已导出（${indexes.length} 页）',
+            ? 'PDF 已导出（无极画布按内容裁切，笔迹为矢量）'
+            : 'PDF 已导出（${indexes.length} 页，笔迹为矢量）',
       );
     } catch (error) {
       _message('PDF 导出失败: $error', error: true);
     }
+  }
+
+  void _paintVectorStrokes(
+    PdfGraphics canvas, {
+    required Map<String, dynamic> doc,
+    required Map<String, dynamic> page,
+    required Rect region,
+    required double scale,
+    required double pageHeight,
+  }) {
+    for (final layerValue in page['layers'] as List? ?? const []) {
+      final layer = layerValue as Map;
+      if (layer['visible'] == false) continue;
+      final layerOpacity = (layer['opacity'] as num?)?.toDouble() ?? 1.0;
+      if (layerOpacity <= 0.01) continue;
+      for (final value in layer['elements'] as List? ?? const []) {
+        final element = Map<String, dynamic>.from(value as Map);
+        if (element['type'] != 'stroke') continue;
+        final raw = element['points'] as List? ?? const [];
+        final points = <Offset>[];
+        final pressures = <double>[];
+        for (final point in raw) {
+          final list = point as List;
+          points.add(
+            Offset((list[0] as num).toDouble(), (list[1] as num).toDouble()),
+          );
+          pressures.add(
+            list.length > 2 ? (list[2] as num).toDouble() : 1.0,
+          );
+        }
+        if (points.isEmpty) continue;
+        final highlighter = element['highlighter'] == true;
+        final baseWidth = (element['width'] as num?)?.toDouble() ?? 2.0;
+        if (baseWidth <= 0) continue;
+        final opacity = (layerOpacity *
+                ((element['opacity'] as num?)?.toDouble() ?? 1.0) *
+                (highlighter ? 0.32 : 1.0))
+            .clamp(0.0, 1.0);
+        if (opacity <= 0) continue;
+        final color = PdfColor.fromInt(
+          _parseColor(element['color'] as String? ?? '#222222').toARGB32(),
+        );
+        canvas
+          ..setGraphicState(
+            PdfGraphicState(
+              opacity: opacity,
+              blendMode: highlighter ? PdfBlendMode.multiply : null,
+            ),
+          )
+          ..setStrokeColor(color)
+          ..setFillColor(color)
+          ..setLineCap(PdfLineCap.round)
+          ..setLineJoin(PdfLineJoin.round);
+        if (points.length == 1) {
+          final point = points.first;
+          final pressure = pressures.first.clamp(0.05, 1.0);
+          final radius = baseWidth * (0.45 + pressure * 0.85) * 0.5;
+          canvas
+            ..drawEllipse(
+              (point.dx - region.left) * scale,
+              pageHeight - (point.dy - region.top) * scale,
+              radius * scale,
+              radius * scale,
+            )
+            ..fillPath();
+          continue;
+        }
+        for (var i = 1; i < points.length; i++) {
+          final start = points[i - 1];
+          final end = points[i];
+          final pressure = ((pressures[i - 1] + pressures[i]) / 2)
+              .clamp(0.05, 1.0);
+          final segmentWidth = baseWidth * (0.45 + pressure * 0.85);
+          canvas
+            ..setLineWidth(segmentWidth * scale)
+            ..moveTo(
+              (start.dx - region.left) * scale,
+              pageHeight - (start.dy - region.top) * scale,
+            )
+            ..lineTo(
+              (end.dx - region.left) * scale,
+              pageHeight - (end.dy - region.top) * scale,
+            )
+            ..strokePath();
+        }
+      }
+    }
+  }
+
+  Color _parseColor(String value) {
+    final hex = value.replaceFirst('#', '');
+    final parsed = int.tryParse(hex, radix: 16) ?? 0x222222;
+    return Color(0xFF000000 | parsed);
   }
 
   Size _pdfPageSize(Size size) {
@@ -2144,11 +2260,7 @@ class _EditorPageState extends State<EditorPage> {
                       child: Text('${_eraseAllLayers ? '✓ ' : ''}所有可见图层'),
                     ),
                   ],
-                  icon: Icon(
-                    _eraserMode == 'pixel'
-                        ? Icons.auto_fix_normal
-                        : Icons.cleaning_services_outlined,
-                  ),
+                  icon: const Icon(Icons.cleaning_services_outlined),
                 ),
               if (_tool == 'select')
                 IconButton(
@@ -2247,11 +2359,11 @@ class _EditorPageState extends State<EditorPage> {
     final scheme = Theme.of(context).colorScheme;
     final tools = <(String, IconData, String)>[
       ('pointer', Icons.near_me_outlined, '指针'),
-      ('select', Icons.gesture, '框选'),
+      ('select', Icons.select_all, '框选'),
       ('hand', Icons.pan_tool_outlined, '移动'),
       ('pen', Icons.edit_outlined, '笔'),
-      ('highlighter', Icons.brush_outlined, '荧光笔'),
-      ('eraser', Icons.auto_fix_normal, '橡皮'),
+      ('highlighter', Icons.border_color_outlined, '荧光笔'),
+      ('eraser', Icons.cleaning_services_outlined, '橡皮'),
       ('text', Icons.title, '文本框'),
       if (!_isInfinite) ('body', Icons.notes, '正文'),
       ('image', Icons.image_outlined, '图片'),
@@ -2550,9 +2662,12 @@ class _EditorPageState extends State<EditorPage> {
     if (doc == null) return null;
     final size = pagedPageSize(doc, page);
     final longest = math.max(size.width, size.height);
-    final pixelRatio = (300 / math.max(1.0, longest)).clamp(0.05, 0.5);
+    final pixelRatio = (160 / math.max(1.0, longest)).clamp(0.05, 0.3);
     final images = await _imagesForPage(page);
     try {
+      // Give the editor one frame to breathe before the UI-isolate
+      // rasterization; the thumbnail cache also renders one at a time.
+      await Future<void>.delayed(Duration.zero);
       return await renderPagePng(
         document: doc,
         page: page,

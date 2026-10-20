@@ -27,7 +27,7 @@ struct ExportStroke {
 };
 
 struct BookExportPage {
-  int pageNumber = 0;         // 1-based output order
+  int pageNumber = 0;         // 1-based document page number
   int documentPageIndex = 0;  // 0-based document page index
   bool notePage = false;
   double width = 0;   // document page width in points

@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 class PageThumbnailCache {
   final Map<String, Uint8List> _ready = {};
   final Map<String, Future<Uint8List?>> _pending = {};
+  Future<void> _serial = Future<void>.value();
   int _generation = 0;
 
   int get cachedCount => _ready.length;
@@ -22,6 +23,15 @@ class PageThumbnailCache {
     _pending.clear();
   }
 
+  /// Serializes thumbnail rasterization. `ui.Picture.toImage` must run on the
+  /// UI isolate; rendering a grid of previews concurrently causes visible
+  /// frame jank, so at most one preview is rendered at a time.
+  Future<Uint8List?> _enqueue(Future<Uint8List?> Function() render) {
+    final result = _serial.then((_) => render());
+    _serial = result.then<void>((_) {}, onError: (_) {});
+    return result;
+  }
+
   Future<Uint8List?> load(String pageId, Future<Uint8List?> Function() render) {
     final cached = _ready[pageId];
     if (cached != null) return Future.value(cached);
@@ -30,7 +40,7 @@ class PageThumbnailCache {
 
     final generation = _generation;
     late final Future<Uint8List?> future;
-    future = render()
+    future = _enqueue(render)
         .then((bytes) {
           if (bytes != null && generation == _generation) {
             _ready[pageId] = bytes;

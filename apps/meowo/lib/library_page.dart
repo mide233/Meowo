@@ -325,7 +325,7 @@ class _LibraryPageState extends State<LibraryPage> {
               Positioned.fill(
                 child: PopScope(
                   canPop: false,
-                  child: _ImportOverlay(label: state.importLabel ?? '文档'),
+                  child: _ImportOverlay(state: state, label: state.importLabel ?? '文档'),
                 ),
               ),
           ],
@@ -360,10 +360,38 @@ class _LibraryPageState extends State<LibraryPage> {
     );
   }
 
+  Future<bool> _confirmLargeImport(String path) async {
+    final probe = await state.probeBook(path);
+    final pageCount = (probe?['pageCount'] as num?)?.toInt() ?? 0;
+    if (pageCount <= 500 || !mounted) return true;
+    final proceed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('书籍页数较多'),
+        content: Text(
+          '这本书有 $pageCount 页，导入和生成预览可能需要较长时间，'
+          '并占用较多存储空间。\n\n是否继续导入？',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('继续导入'),
+          ),
+        ],
+      ),
+    );
+    return proceed == true;
+  }
+
   Future<void> _importPdf() async {
     const typeGroup = XTypeGroup(label: 'PDF', extensions: ['pdf']);
     final file = await openFile(acceptedTypeGroups: [typeGroup]);
     if (file == null) return;
+    if (!await _confirmLargeImport(file.path)) return;
     await state.importPdf(file.path);
   }
 
@@ -371,6 +399,7 @@ class _LibraryPageState extends State<LibraryPage> {
     const typeGroup = XTypeGroup(label: 'EPUB', extensions: ['epub']);
     final file = await openFile(acceptedTypeGroups: [typeGroup]);
     if (file == null) return;
+    if (!await _confirmLargeImport(file.path)) return;
     await state.importEpub(file.path);
   }
 
@@ -498,13 +527,22 @@ class _LibraryPageState extends State<LibraryPage> {
 }
 
 class _ImportOverlay extends StatelessWidget {
-  const _ImportOverlay({required this.label});
+  const _ImportOverlay({required this.state, required this.label});
 
+  final AppState state;
   final String label;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
+    final total = state.importTotal;
+    final completed = state.importCompleted;
+    final phase = state.importPhase;
+    final phaseLabel = switch (phase) {
+      'saving' => '正在保存页面',
+      'reading' => '正在读取文件',
+      _ => '正在渲染页面',
+    };
     return Stack(
       key: const ValueKey('import-progress'),
       children: [
@@ -517,28 +555,47 @@ class _ImportOverlay extends StatelessWidget {
             elevation: 8,
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 24),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  const SizedBox(
-                    width: 34,
-                    height: 34,
-                    child: CircularProgressIndicator(strokeWidth: 3),
-                  ),
-                  const SizedBox(height: 18),
-                  Text(
-                    '正在导入 $label…',
-                    style: Theme.of(context).textTheme.titleMedium,
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    '导入在后台进行，请保持应用打开。',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: scheme.onSurfaceVariant,
+              child: SizedBox(
+                width: 300,
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const SizedBox(
+                      width: 34,
+                      height: 34,
+                      child: CircularProgressIndicator(strokeWidth: 3),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 18),
+                    Text(
+                      '正在导入 $label…',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                    const SizedBox(height: 12),
+                    LinearProgressIndicator(
+                      value: state.importProgress,
+                      minHeight: 5,
+                      borderRadius: BorderRadius.circular(3),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      total > 0
+                          ? '$phaseLabel  $completed / $total'
+                          : '$phaseLabel…',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '导入在后台进行，请保持应用打开。',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: scheme.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
               ),
             ),
           ),

@@ -104,7 +104,10 @@ class MeowoHome extends StatelessWidget {
                 Expanded(
                   child: state.activeDocumentId == null
                       ? LibraryPage(state: state)
-                      : EditorPage(state: state),
+                      : EditorPage(
+                          key: ValueKey(state.activeDocumentId),
+                          state: state,
+                        ),
                 ),
               ],
             ),

@@ -21,6 +21,19 @@ using json = nlohmann::json;
 
 namespace {
 
+// 2x2 PNG: top row red, bottom row blue. Used to assert that exported
+// overlays and fallback page bitmaps keep their display orientation.
+const unsigned char kTopRedBottomBluePng[] = {
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00, 0x0d,
+    0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x14, 0x00, 0x00, 0x00, 0x14,
+    0x08, 0x06, 0x00, 0x00, 0x00, 0x8d, 0x89, 0x1d, 0x0d, 0x00, 0x00, 0x00,
+    0x27, 0x49, 0x44, 0x41, 0x54, 0x78, 0x9c, 0x63, 0xfc, 0xcf, 0xc0, 0xf0,
+    0x9f, 0x81, 0x8a, 0x80, 0x89, 0x9a, 0x86, 0x8d, 0x50, 0x03, 0x47, 0xc1,
+    0x28, 0x18, 0x05, 0xc4, 0x00, 0x46, 0x06, 0x86, 0xff, 0xa3, 0xc5, 0xd7,
+    0x20, 0x33, 0x10, 0x00, 0xf7, 0xf8, 0x04, 0x0f, 0xb2, 0x88, 0x6d, 0xdf,
+    0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82,
+};
+
 void write_vector_pdf(const fs::path& path) {
   const std::string content1 =
       "BT /F1 24 Tf 40 340 Td (Hello Vector) Tj ET\n"
@@ -282,7 +295,7 @@ TEST(Core, PdfImportKeepsRasterFallbackAndRendersVectorPages) {
     const std::string svg = page["svg"];
     EXPECT_EQ(svg.rfind("<svg", 0), 0u);
     EXPECT_NE(svg.find("<path"), std::string::npos);
-    EXPECT_EQ(svg.find("xlink:href=\"#font_"), std::string::npos);
+    EXPECT_EQ(svg.find("<use xlink:href=\"#font_"), std::string::npos);
     EXPECT_GT(svg.size(), 1000u);
     EXPECT_EQ(page["width"].get<double>(), 300.0);
     EXPECT_EQ(page["height"].get<double>(), 400.0);
@@ -478,6 +491,226 @@ TEST(Core, ExportBookPdfWritesInkAndHighlighterAsPaths) {
   fz_drop_context(ctx);
 }
 
+TEST(Core, ExportBookPdfKeepsOverlayAndInkOrientation) {
+  TempDir temp;
+  Core core(temp.path);
+  const fs::path pdf = temp.path / "orientation.pdf";
+  write_vector_pdf(pdf);
+  const json imported = core.call({{"op", "import_pdf"}, {"sourcePath", pdf.string()}});
+  json doc = core.call({{"op", "open_document"}, {"id", imported["id"]}});
+  doc["pages"][0]["layers"][0]["elements"].push_back(
+      {{"id", "orientation_ink"},
+       {"type", "stroke"},
+       {"points", json::array({json::array({20, 230, 1.0}),
+                              json::array({120, 230, 1.0})})},
+       {"color", "#00FF00"},
+       {"width", 8.0},
+       {"highlighter", false},
+       {"opacity", 1.0}});
+  core.call({{"op", "save_document"}, {"document", doc}});
+
+  const fs::path overlay_dir = temp.path / "orientation-overlays";
+  fs::create_directories(overlay_dir);
+  {
+    std::ofstream overlay(overlay_dir / "overlay-0.png", std::ios::binary);
+    overlay.write(reinterpret_cast<const char*>(kTopRedBottomBluePng),
+                  sizeof(kTopRedBottomBluePng));
+  }
+  const fs::path out = temp.path / "orientation-out.pdf";
+  const json result = core.call({{"op", "export_book_pdf"},
+                                 {"documentId", imported["id"]},
+                                 {"targetPath", out.string()},
+                                 {"pageIndexes", {0}},
+                                 {"overlayDir", overlay_dir.string()}});
+  EXPECT_EQ(result["vectorPages"], json::array({1}));
+
+  fz_context* ctx = fz_new_context(nullptr, nullptr, FZ_STORE_DEFAULT);
+  ASSERT_NE(ctx, nullptr);
+  fz_register_document_handlers(ctx);
+  fz_document* out_doc = fz_open_document(ctx, out.string().c_str());
+  ASSERT_NE(out_doc, nullptr);
+  fz_page* page = fz_load_page(ctx, out_doc, 0);
+  ASSERT_NE(page, nullptr);
+  fz_pixmap* pix =
+      fz_new_pixmap_from_page(ctx, page, fz_identity, fz_device_rgb(ctx), 0);
+  ASSERT_NE(pix, nullptr);
+  const auto pixel = [&](int x, int y, int* r, int* g, int* b) {
+    const unsigned char* p = pix->samples + y * pix->stride + x * 3;
+    *r = p[0];
+    *g = p[1];
+    *b = p[2];
+  };
+  int r = 0, g = 0, b = 0;
+  // The overlay image must stay upright: red on top, blue at the bottom.
+  pixel(pix->w / 2, 8, &r, &g, &b);
+  EXPECT_GT(r, 180);
+  EXPECT_LT(g, 80);
+  EXPECT_LT(b, 80);
+  pixel(pix->w / 2, pix->h - 8, &r, &g, &b);
+  EXPECT_LT(r, 80);
+  EXPECT_LT(g, 80);
+  EXPECT_GT(b, 180);
+  // The green ink is in the same display coordinate space and must not be
+  // vertically inverted.
+  pixel(60, 230, &r, &g, &b);
+  EXPECT_LT(r, 100);
+  EXPECT_GT(g, 150);
+  EXPECT_LT(b, 100);
+
+  fz_drop_pixmap(ctx, pix);
+  fz_drop_page(ctx, page);
+  fz_drop_document(ctx, out_doc);
+  fz_drop_context(ctx);
+}
+
+TEST(Core, ExportBookPdfFallbackBitmapKeepsOrientation) {
+  TempDir temp;
+  Core core(temp.path);
+  const fs::path png = temp.path / "orientation.png";
+  {
+    std::ofstream out(png, std::ios::binary);
+    out.write(reinterpret_cast<const char*>(kTopRedBottomBluePng),
+              sizeof(kTopRedBottomBluePng));
+  }
+  const json imported =
+      core.call({{"op", "import_pdf_pages"},
+                 {"title", "orientation raster"},
+                 {"pages", json::array({json{{"path", png.string()},
+                                             {"width", 300.0},
+                                             {"height", 400.0}}})}});
+  const fs::path out = temp.path / "orientation-fallback.pdf";
+  const json result = core.call({{"op", "export_book_pdf"},
+                                 {"documentId", imported["id"]},
+                                 {"targetPath", out.string()},
+                                 {"pageIndexes", {0}}});
+  EXPECT_EQ(result["fallbackPages"].size(), 1u);
+
+  fz_context* ctx = fz_new_context(nullptr, nullptr, FZ_STORE_DEFAULT);
+  ASSERT_NE(ctx, nullptr);
+  fz_register_document_handlers(ctx);
+  fz_document* doc = fz_open_document(ctx, out.string().c_str());
+  ASSERT_NE(doc, nullptr);
+  fz_page* page = fz_load_page(ctx, doc, 0);
+  ASSERT_NE(page, nullptr);
+  fz_pixmap* pix =
+      fz_new_pixmap_from_page(ctx, page, fz_identity, fz_device_rgb(ctx), 0);
+  ASSERT_NE(pix, nullptr);
+  const unsigned char* top =
+      pix->samples + 8 * pix->stride + (pix->w / 2) * 3;
+  const unsigned char* bottom =
+      pix->samples + (pix->h - 8) * pix->stride + (pix->w / 2) * 3;
+  EXPECT_GT(top[0], 180);
+  EXPECT_LT(top[1], 80);
+  EXPECT_LT(top[2], 80);
+  EXPECT_LT(bottom[0], 80);
+  EXPECT_LT(bottom[1], 80);
+  EXPECT_GT(bottom[2], 180);
+
+  fz_drop_pixmap(ctx, pix);
+  fz_drop_page(ctx, page);
+  fz_drop_document(ctx, doc);
+  fz_drop_context(ctx);
+}
+
+TEST(Core, ExportBookPdfKeepsNoteInkUpright) {
+  TempDir temp;
+  Core core(temp.path);
+  const fs::path pdf = temp.path / "note-orientation.pdf";
+  write_vector_pdf(pdf);
+  const json imported = core.call({{"op", "import_pdf"}, {"sourcePath", pdf.string()}});
+  json doc = core.call({{"op", "open_document"}, {"id", imported["id"]}});
+  json note = {{"id", "page_note_orientation"},
+               {"isNotePage", true},
+               {"width", 123.0},
+               {"height", 456.0},
+               {"layers", json::array({json{{"id", "layer_note_orientation"},
+                                            {"name", "note"},
+                                            {"visible", true},
+                                            {"locked", false},
+                                            {"opacity", 1.0},
+                                            {"elements", json::array()}}})},
+               {"body", nullptr}};
+  note["layers"][0]["elements"].push_back(
+      {{"id", "note_ink_orientation"},
+       {"type", "stroke"},
+       {"points", json::array({json::array({20, 20, 1.0}),
+                              json::array({120, 20, 1.0})})},
+       {"color", "#00FF00"},
+       {"width", 8.0},
+       {"highlighter", false},
+       {"opacity", 1.0}});
+  doc["pages"].push_back(note);
+  core.call({{"op", "save_document"}, {"document", doc}});
+
+  const fs::path out = temp.path / "note-orientation-out.pdf";
+  const json result = core.call({{"op", "export_book_pdf"},
+                                 {"documentId", imported["id"]},
+                                 {"targetPath", out.string()},
+                                 {"pageIndexes", {static_cast<int>(doc["pages"].size()) - 1}}});
+  EXPECT_EQ(result["exportedPages"], json::array({3}));
+
+  fz_context* ctx = fz_new_context(nullptr, nullptr, FZ_STORE_DEFAULT);
+  ASSERT_NE(ctx, nullptr);
+  fz_register_document_handlers(ctx);
+  fz_document* out_doc = fz_open_document(ctx, out.string().c_str());
+  ASSERT_NE(out_doc, nullptr);
+  fz_page* page = fz_load_page(ctx, out_doc, 0);
+  ASSERT_NE(page, nullptr);
+  fz_pixmap* pix =
+      fz_new_pixmap_from_page(ctx, page, fz_identity, fz_device_rgb(ctx), 0);
+  ASSERT_NE(pix, nullptr);
+  const auto pixel = [&](int x, int y, int* r, int* g, int* b) {
+    const unsigned char* p = pix->samples + y * pix->stride + x * 3;
+    *r = p[0];
+    *g = p[1];
+    *b = p[2];
+  };
+  int r = 0, g = 0, b = 0;
+  pixel(60, 20, &r, &g, &b);
+  EXPECT_LT(r, 100);
+  EXPECT_GT(g, 150);
+  EXPECT_LT(b, 100);
+  pixel(60, pix->h - 20, &r, &g, &b);
+  EXPECT_GT(r, 200);
+  EXPECT_GT(g, 200);
+  EXPECT_GT(b, 200);
+
+  fz_drop_pixmap(ctx, pix);
+  fz_drop_page(ctx, page);
+  fz_drop_document(ctx, out_doc);
+  fz_drop_context(ctx);
+}
+
+TEST(Core, ProbeBookReportsPageCountWithoutImporting) {
+  TempDir temp;
+  Core core(temp.path);
+  const fs::path pdf = temp.path / "probe.pdf";
+  write_vector_pdf(pdf);
+  const json probe = core.call({{"op", "probe_book"},
+                                {"sourcePath", pdf.string()}});
+  EXPECT_EQ(probe["pageCount"], 2);
+  EXPECT_EQ(probe["encrypted"], false);
+  EXPECT_EQ(core.call({{"op", "list_documents"}})["items"].size(), 0u);
+}
+
+TEST(Core, ImportBookWritesProgressAndHasNoPageLimit) {
+  TempDir temp;
+  Core core(temp.path);
+  const fs::path pdf = temp.path / "progress.pdf";
+  write_vector_pdf(pdf);
+  const fs::path progress = temp.path / "import-progress.json";
+  const json imported = core.call({{"op", "import_pdf"},
+                                   {"sourcePath", pdf.string()},
+                                   {"progressPath", progress.string()}});
+  EXPECT_EQ(imported["pages"], 2);
+  ASSERT_TRUE(fs::exists(progress));
+  std::ifstream in(progress);
+  const json value = json::parse(in);
+  EXPECT_EQ(value["phase"], "saving");
+  EXPECT_EQ(value["completed"], value["total"]);
+  EXPECT_GE(value["total"].get<int>(), 3);
+}
+
 TEST(Core, ExportBookPdfUsesPaperSizeForNotePagesAndHonorsRanges) {
   TempDir temp;
   Core core(temp.path);
@@ -576,7 +809,7 @@ TEST(Core, ExportBookPdfUsesPaperSizeForNotePagesAndHonorsRanges) {
                                  {"documentId", imported["id"]},
                                  {"targetPath", page_out.string()},
                                  {"pageIndexes", {2}}});
-  EXPECT_EQ(single["exportedPages"], json::array({1}));
+  EXPECT_EQ(single["exportedPages"], json::array({3}));
   fz_context* ctx2 = fz_new_context(nullptr, nullptr, FZ_STORE_DEFAULT);
   ASSERT_NE(ctx2, nullptr);
   fz_register_document_handlers(ctx2);

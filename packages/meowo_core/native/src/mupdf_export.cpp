@@ -318,12 +318,22 @@ void flatten_begin_group(fz_context* ctx, fz_device* dev, fz_rect area,
 void flatten_end_group(fz_context* ctx, fz_device* dev) {
   fz_end_group(ctx, flatten_cast(dev)->target);
 }
+#if FZ_VERSION_MAJOR > 1 || \
+    (FZ_VERSION_MAJOR == 1 && FZ_VERSION_MINOR >= 27)
+int flatten_begin_tile(fz_context* ctx, fz_device* dev, fz_rect area,
+                       fz_rect view, float xstep, float ystep, fz_matrix ctm,
+                       int id, int doc_id) {
+  return fz_begin_tile_tid(ctx, flatten_cast(dev)->target, area, view, xstep,
+                           ystep, ctm, id, doc_id);
+}
+#else
 int flatten_begin_tile(fz_context* ctx, fz_device* dev, fz_rect area,
                        fz_rect view, float xstep, float ystep, fz_matrix ctm,
                        int id) {
   return fz_begin_tile_id(ctx, flatten_cast(dev)->target, area, view, xstep,
                           ystep, ctm, id);
 }
+#endif
 void flatten_end_tile(fz_context* ctx, fz_device* dev) {
   fz_end_tile(ctx, flatten_cast(dev)->target);
 }
@@ -802,8 +812,16 @@ BookExportResult build_book_pdf(const BookExportRequest& request) {
         page.width > 0 ? display_width / page.width : 1.0;
     const double sy =
         page.height > 0 ? display_height / page.height : 1.0;
-    const fz_matrix outer = fz_scale(static_cast<float>(sx),
-                                     static_cast<float>(sy));
+    // Display coordinates use a top-left origin; PDF page space uses a
+    // bottom-left origin. Every overlay (fallback bitmap and ink strokes) is
+    // drawn in display coordinates, so this flip must also apply when there
+    // is no source PDF page to provide the transform.
+    const fz_matrix flip =
+        fz_concat(fz_scale(1.0f, -1.0f),
+                  fz_translate(0.0f, static_cast<float>(display_height)));
+    const fz_matrix outer =
+        fz_concat(flip, fz_scale(static_cast<float>(sx),
+                                 static_cast<float>(sy)));
 
     if (!page.notePage && page.loadFallbackPng) {
       std::string png;
@@ -814,8 +832,7 @@ BookExportResult build_book_pdf(const BookExportRequest& request) {
       }
       if (!png.empty()) {
         const fz_matrix placement{static_cast<float>(display_width), 0, 0,
-                                  static_cast<float>(-display_height), 0,
-                                  static_cast<float>(display_height)};
+                                  static_cast<float>(display_height), 0, 0};
         std::string image_error;
         if (!append_image(ctx, output, resources, content, png, placement,
                           &image_error)) {

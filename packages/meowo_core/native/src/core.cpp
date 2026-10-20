@@ -576,6 +576,17 @@ std::vector<std::pair<double, double>> pressure_curve_for(const json& doc,
   return curve;
 }
 
+template <typename T>
+T json_value_or(const json& object, const char* key, T fallback) {
+  const auto it = object.find(key);
+  if (it == object.end() || it->is_null()) return fallback;
+  try {
+    return it->get<T>();
+  } catch (const json::exception&) {
+    return fallback;
+  }
+}
+
 std::vector<ExportStroke> visible_strokes(const json& doc, const json& page) {
   std::vector<ExportStroke> strokes;
   for (const auto& layer_value : page.value("layers", json::array())) {
@@ -697,6 +708,7 @@ class Workspace {
     if (op == "import_markdown") return import_markdown(request);
     if (op == "import_pdf") return import_pdf(request);
     if (op == "import_epub") return import_epub(request);
+    if (op == "probe_book") return probe_book(request);
     if (op == "import_pdf_pages") return import_pdf_pages(request);
     if (op == "render_book_pages_svg") return render_book_pages_svg(request);
     if (op == "export_document") return export_document(request);
@@ -1162,6 +1174,40 @@ class Workspace {
     return json{{"id", id}, {"title", title}, {"pages", 1}};
   }
 
+  json probe_book(const json& request) {
+    const std::string source = request.value("sourcePath", "");
+    if (source.empty()) throw CoreError("缺少书籍路径");
+    if (!fs::exists(source)) throw CoreError("书籍文件不存在");
+    const auto probe =
+        probe_with_mupdf(source, request.value("password", ""));
+    if (!probe.ok) {
+      throw CoreError(probe.error.empty() ? "无法读取书籍页数" : probe.error);
+    }
+    return json{{"pageCount", probe.pageCount},
+                {"encrypted", probe.encrypted},
+                {"title", probe.title},
+                {"author", probe.author},
+                {"format", probe.format}};
+  }
+
+  void write_import_progress(const std::string& path, const char* phase,
+                             int completed, int total, int page_number) {
+    if (path.empty()) return;
+    try {
+      ensure_dir(fs::path(path).parent_path());
+      const json value{{"phase", phase},
+                       {"completed", completed},
+                       {"total", total},
+                       {"pageNumber", page_number}};
+      std::ofstream out(path, std::ios::binary | std::ios::trunc);
+      if (!out) return;
+      const std::string text = value.dump();
+      out.write(text.data(), static_cast<std::streamsize>(text.size()));
+    } catch (...) {
+      // Progress is advisory and must never fail an import.
+    }
+  }
+
   json import_book(const json& request, const std::string& format) {
     const std::string source = request.value("sourcePath", "");
     if (source.empty()) throw CoreError("缺少 " + format + " 路径");
@@ -1185,9 +1231,11 @@ class Workspace {
     } cleanup{temp};
 
     MuPdfResult result;
+    const std::string progress_path = request.value("progressPath", "");
     try {
       result = render_with_mupdf(source_path.string(), temp.string(),
-                                 request.value("password", ""), 500);
+                                 request.value("password", ""), 0,
+                                 progress_path);
     } catch (const std::exception& e) {
       throw CoreError(std::string("MuPDF 渲染失败: ") + e.what());
     }
@@ -1213,7 +1261,13 @@ class Workspace {
     json doc = make_document(id, title, "book", Paper{"A4", 595.276, 841.89, "blank"});
     doc["pages"] = json::array();
     doc["assets"] = json::array();
-    std::vector<std::pair<std::string, std::pair<std::string, std::string>>> assets;
+    struct PendingPageAsset {
+      std::string id;
+      std::string name;
+      fs::path path;
+      size_t size = 0;
+    };
+    std::vector<PendingPageAsset> page_assets;
     double paper_width = 0;
     double paper_height = 0;
     for (int i = 0; i < result.pageCount; ++i) {
@@ -1229,17 +1283,20 @@ class Workspace {
       double width = result.pages[static_cast<size_t>(i)].width;
       double height = result.pages[static_cast<size_t>(i)].height;
       if (width <= 0 || height <= 0) {
-        width = pixel_w * 72.0 / 120.0;
-        height = pixel_h * 72.0 / 120.0;
+        width = pixel_w * 72.0 / 96.0;
+        height = pixel_h * 72.0 / 96.0;
       }
-      const std::string bytes = read_file(png);
-      if (bytes.size() > kMaxAssetBytes) throw CoreError("书籍页面图片超过 512 MiB");
+      std::error_code page_size_ec;
+      const size_t page_size = fs::file_size(png, page_size_ec);
+      if (page_size_ec) throw CoreError("无法读取页面图片大小");
+      if (page_size > kMaxAssetBytes) throw CoreError("书籍页面图片超过 512 MiB");
       if (i == 0) {
         paper_width = width;
         paper_height = height;
       }
       const std::string asset_id = new_id("asset");
-      assets.push_back({asset_id, {png.filename().string(), bytes}});
+      page_assets.push_back(
+          {asset_id, "第 " + std::to_string(i + 1) + " 页", png, page_size});
       json page = page_json(width, height);
       page["isNotePage"] = false;
       page["sourceIndex"] = i;
@@ -1249,7 +1306,7 @@ class Workspace {
       doc["assets"].push_back(json{{"id", asset_id},
                                    {"name", "第 " + std::to_string(i + 1) + " 页"},
                                    {"mime", "image/png"},
-                                   {"size", bytes.size()},
+                                   {"size", page_size},
                                    {"kind", "book_page"}});
     }
 
@@ -1267,7 +1324,6 @@ class Workspace {
       vector_enabled = !probe.empty() && probe[0].ok;
     }
 
-    assets.push_back({source_asset_id, {source_path.filename().string(), source_bytes}});
     doc["assets"].push_back(json{{"id", source_asset_id},
                                  {"name", source_path.filename().string()},
                                  {"mime", source_mime},
@@ -1288,10 +1344,42 @@ class Workspace {
 
     const fs::path target = document_path(root_, id);
     save_document_payload(target, doc);
-    for (const auto& [asset_id, payload] : assets) {
-      const std::string& mime = asset_id == source_asset_id ? source_mime : "image/png";
-      save_asset(target, asset_id, payload.first, mime, payload.second);
+    Database asset_db(target);
+    init_document_db(asset_db);
+    Transaction asset_tx(asset_db);
+    const auto save_blob = [&](const std::string& asset_id,
+                               const std::string& name, const std::string& mime,
+                               const std::string& bytes) {
+      Statement stmt(
+          asset_db.get(),
+          "INSERT INTO assets(id, name, mime, size, bytes) VALUES(?, ?, ?, ?, ?)"
+          " ON CONFLICT(id) DO UPDATE SET name=excluded.name, mime=excluded.mime,"
+          " size=excluded.size, bytes=excluded.bytes;");
+      stmt.bind_text(1, asset_id);
+      stmt.bind_text(2, name);
+      stmt.bind_text(3, mime);
+      stmt.bind_int64(4, static_cast<int64_t>(bytes.size()));
+      stmt.bind_blob(5, bytes);
+      stmt.step_done();
+    };
+    const int save_total = static_cast<int>(page_assets.size()) + 1;
+    write_import_progress(progress_path, "saving", 0, save_total, 0);
+    for (size_t i = 0; i < page_assets.size(); ++i) {
+      const auto& asset = page_assets[i];
+      const std::string bytes = read_file(asset.path);
+      if (bytes.size() > kMaxAssetBytes) {
+        throw CoreError("书籍页面图片超过 512 MiB");
+      }
+      save_blob(asset.id, asset.name, "image/png", bytes);
+      write_import_progress(progress_path, "saving",
+                            static_cast<int>(i) + 1, save_total,
+                            static_cast<int>(i) + 1);
     }
+    save_blob(source_asset_id, source_path.filename().string(), source_mime,
+              source_bytes);
+    write_import_progress(progress_path, "saving", save_total, save_total,
+                          result.pageCount);
+    asset_tx.commit();
     Transaction tx(db_);
     insert_catalog(doc);
     tx.commit();
@@ -1316,7 +1404,6 @@ class Workspace {
     }
     const auto& pages = request["pages"];
     if (pages.empty()) throw CoreError("PDF 没有可导入页面");
-    if (pages.size() > 500) throw CoreError("首版单次最多导入 500 页 PDF");
     const std::string title = request.value("title", "PDF");
     const std::string id = new_id("doc");
     json doc = make_document(id, title, "book", Paper{"A4", 595.276, 841.89, "blank"});
@@ -1485,13 +1572,16 @@ class Workspace {
 
     const json source = doc.value("bookSource", json::object());
     const std::string source_mime =
-        source.is_object() ? source.value("mime", "") : "";
+        source.is_object() ? json_value_or<std::string>(source, "mime", "") : "";
     const std::string source_asset_id =
-        source.is_object() ? source.value("assetId", "") : "";
+        source.is_object()
+            ? json_value_or<std::string>(source, "assetId", "")
+            : "";
     const int source_page_count =
-        source.is_object() ? source.value("pageCount", 0) : 0;
-    bool source_encrypted =
-        source.is_object() && source.value("encrypted", false);
+        source.is_object() ? json_value_or<int>(source, "pageCount", 0) : 0;
+    const bool source_encrypted =
+        source.is_object() &&
+        json_value_or<bool>(source, "encrypted", false);
 
     std::string source_pdf;
     std::string force_reason;
@@ -1540,22 +1630,22 @@ class Workspace {
       const json& page = pages[static_cast<size_t>(document_index)];
       if (!page.is_object()) throw CoreError("页面数据无效");
       BookExportPage export_page;
-      export_page.pageNumber = static_cast<int>(output_index) + 1;
+      export_page.pageNumber = document_index + 1;
       export_page.documentPageIndex = document_index;
-      export_page.notePage = page.value("isNotePage", false);
-      export_page.width = page.value("width", 0.0);
-      export_page.height = page.value("height", 0.0);
+      export_page.notePage = json_value_or<bool>(page, "isNotePage", false);
+      export_page.width = json_value_or<double>(page, "width", 0.0);
+      export_page.height = json_value_or<double>(page, "height", 0.0);
       if (export_page.width <= 0) export_page.width = 595.276;
       if (export_page.height <= 0) export_page.height = 841.89;
       if (export_page.notePage) {
         // Inserted note pages use the book paper size, not the current source
         // page size (mixed-size PDFs must not leak their dimensions).
-        const double paper_width = paper.value("width", 0.0);
-        const double paper_height = paper.value("height", 0.0);
+        const double paper_width = json_value_or<double>(paper, "width", 0.0);
+        const double paper_height = json_value_or<double>(paper, "height", 0.0);
         if (paper_width > 0) export_page.width = paper_width;
         if (paper_height > 0) export_page.height = paper_height;
       } else {
-        const int source_index = page.value("sourceIndex", -1);
+        const int source_index = json_value_or<int>(page, "sourceIndex", -1);
         export_page.sourceIndex = source_index;
         if (source_index >= 0 &&
             source_page_count > 0 && source_index >= source_page_count) {
@@ -1575,7 +1665,8 @@ class Workspace {
         export_page.fallbackReason = "missing_source_index";
         export_page.fallbackDetail = "页面没有源 PDF 索引";
       }
-      const std::string fallback_asset = page.value("sourceAssetId", "");
+      const std::string fallback_asset =
+          json_value_or<std::string>(page, "sourceAssetId", "");
       if (!fallback_asset.empty()) {
         export_page.loadFallbackPng = [document_file, fallback_asset]() {
           return read_asset_bytes(document_file, fallback_asset);
